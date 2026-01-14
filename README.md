@@ -1,36 +1,33 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+Hybrid Implementation Plan - Transparent Full-Screen Overlay
+This plan resolves the current limitations by separating the Speech Recognition (which works best in a standard browser) from the Subtitle Overlay (which requires Electron for transparency and "above full-screen" behavior).
 
-## Getting Started
+User Review Required
+IMPORTANT
 
-First, run the development server:
+Why this approach?:
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Browsers cannot do truly transparent windows or stay on top of full-screen PowerPoint.
+Electron cannot do the "free" browser speech recognition without a cloud API key. The Solution: You will open a regular Chrome browser tab to use the microphone. Simultaneously, a small Electron app will run to show the transparent subtitles on top of your PowerPoint. They will talk to each other automatically.
+Proposed Changes
+1. Unified Local Server (Next.js)
+Implement a WebSocket server (using socket.io or simple 
+ws
+) within the Next.js dev server.
+The browser tab sends transcripts to this server.
+The Electron window receives and displays them.
+2. Transparent Electron Window [NEW/RESTORED]
+Create a minimal Electron setup that only opens a fully transparent, always-on-top window.
+This window will have ignoreMouseEvents(true) to avoid blocking PowerPoint clicks.
+3. Speech Recognition Tab (Chrome)
+Update 
+page.js
+ to be the "Control Center".
+It captures the microphone using the Web Speech API (Free/Native).
+It emits the text to the local WebSocket server.
+Verification Plan
+Manual Verification
+Launch: Start the server and Electron.
+Recognition: Open localhost:3000 in Chrome and start the mic.
+Overlay: Verify a transparent subtitle appears on the screen.
+Full Screen Test: Open PowerPoint in Slide Show mode. Verify subtitles stay on top and are transparent.
+Transparency: Ensure no box/frame is visible around the text.
