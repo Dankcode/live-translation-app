@@ -9,6 +9,8 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [sourceLang, setSourceLang] = useState('en-US');
   const [targetLang, setTargetLang] = useState('es');
+  const [llmModel, setLlmModel] = useState('none');
+  const [showSettings, setShowSettings] = useState(false);
   const [transcript, setTranscript] = useState({ original: '', translated: '' });
 
   const recognitionRef = useRef(null);
@@ -45,7 +47,7 @@ export default function Home() {
 
         const currentText = finalTranscript || interimTranscript;
         if (currentText) {
-          const translated = await translateText(currentText, sourceLang.split('-')[0], targetLang);
+          const translated = await translateText(currentText, sourceLang.split('-')[0], targetLang, llmModel);
           const data = { original: currentText, translated };
           setTranscript(data);
 
@@ -65,7 +67,7 @@ export default function Home() {
         if (isRecording) recognitionRef.current.start();
       };
     }
-  }, [sourceLang, targetLang, isRecording]);
+  }, [sourceLang, targetLang, isRecording, llmModel]);
 
   const toggleRecording = () => {
     if (!recognitionRef.current) return;
@@ -134,11 +136,45 @@ export default function Home() {
               </div>
             </section>
 
+            <section className="bg-slate-800/50 border border-slate-700 p-6 rounded-3xl space-y-4 shadow-xl">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold flex items-center gap-2 text-indigo-300">
+                  <Sparkles className="w-5 h-5 text-indigo-400" /> AI Refinement
+                </h2>
+                <button
+                  onClick={() => setShowSettings(!showSettings)}
+                  className="p-2 hover:bg-slate-700 rounded-lg transition-colors"
+                >
+                  <Settings className={`w-5 h-5 transition-transform ${showSettings ? 'rotate-90' : ''}`} />
+                </button>
+              </div>
+
+              {showSettings && (
+                <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs text-slate-400 uppercase tracking-widest font-bold">LLM Assistant</label>
+                    <select
+                      value={llmModel}
+                      onChange={(e) => setLlmModel(e.target.value)}
+                      className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
+                    >
+                      <option value="none">Default (No LLM)</option>
+                      <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
+                      <option value="gemini-1.5-pro">Gemini 1.5 Pro (Accurate)</option>
+                    </select>
+                    <p className="text-[10px] text-slate-500 italic mt-1">
+                      * Gemini is used automatically for Chinese translations.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </section>
+
             <button
               onClick={toggleRecording}
               className={`w-full py-5 rounded-3xl flex items-center justify-center gap-3 font-bold text-xl transition-all ${isRecording
-                  ? 'bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/20'
-                  : 'bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-500/20'
+                ? 'bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/20'
+                : 'bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-500/20'
                 }`}
             >
               {isRecording ? <MicOff /> : <Mic />}

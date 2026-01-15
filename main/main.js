@@ -22,6 +22,7 @@ function createOverlayWindow() {
   overlayWindow.setIgnoreMouseEvents(true);
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  overlayWindow.setFullScreenable(false); // Prevent it from being minimized/hidden by fullscreen transitions
 
   // Position at bottom
   const { screen } = require('electron');

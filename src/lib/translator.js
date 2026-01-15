@@ -1,9 +1,9 @@
-export async function translateText(text, from, to) {
+export async function translateText(text, from, to, llmModel = 'none') {
     try {
         const response = await fetch('/api/translate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, from, to }),
+            body: JSON.stringify({ text, from, to, llmModel }),
         });
 
         if (!response.ok) throw new Error('Network response was not ok');
