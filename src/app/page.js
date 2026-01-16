@@ -10,11 +10,15 @@ export default function Home() {
   const [sourceLang, setSourceLang] = useState('en-US');
   const [targetLang, setTargetLang] = useState('es');
   const [llmModel, setLlmModel] = useState('none');
+  const [translationMode, setTranslationMode] = useState('api');
   const [showSettings, setShowSettings] = useState(false);
-  const [transcript, setTranscript] = useState({ original: '', translated: '' });
+  const [segments, setSegments] = useState([]); // Array of { id, original, translated, isFinal }
+  const [manualText, setManualText] = useState('');
+  const [manualTranslated, setManualTranslated] = useState('');
 
   const recognitionRef = useRef(null);
   const socketRef = useRef(null);
+  const segmentsRef = useRef([]); // Use ref to avoid stale closure in onresult
 
   useEffect(() => {
     // Initialize socket
@@ -35,26 +39,51 @@ export default function Home() {
 
       recognitionRef.current.onresult = async (event) => {
         let interimTranscript = '';
-        let finalTranscript = '';
+        const finalSegments = [];
+        const now = Date.now();
 
         for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const text = event.results[i][0].transcript;
           if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
+            const id = 'final-' + i + '-' + now;
+            finalSegments.push({ id, original: text, translated: '', isFinal: true });
+
+            // Trigger translation for this final segment
+            translateText(text, sourceLang.split('-')[0], targetLang, llmModel, translationMode).then(translated => {
+              setSegments(prev => prev.map(s => s.id === id ? { ...s, translated } : s));
+              if (socketRef.current) {
+                socketRef.current.emit('send-subtitle', { original: text, translated });
+              }
+            });
           } else {
-            interimTranscript += event.results[i][0].transcript;
+            interimTranscript += text;
           }
         }
 
-        const currentText = finalTranscript || interimTranscript;
-        if (currentText) {
-          const translated = await translateText(currentText, sourceLang.split('-')[0], targetLang, llmModel);
-          const data = { original: currentText, translated };
-          setTranscript(data);
+        // Real-time (interim) translation logic
+        if (interimTranscript) {
+          const interimId = 'interim-' + now;
 
-          // Emit to the Electron overlay via websocket
-          if (socketRef.current) {
-            socketRef.current.emit('send-subtitle', data);
-          }
+          // Debounce interim translation to avoid flooding the API
+          clearTimeout(window.interimTranslateTimer);
+          window.interimTranslateTimer = setTimeout(async () => {
+            const translated = await translateText(interimTranscript, sourceLang.split('-')[0], targetLang, llmModel, translationMode);
+            setSegments(prev => prev.map(s => s.id.startsWith('interim-') ? { ...s, translated } : s));
+            if (socketRef.current) {
+              socketRef.current.emit('send-subtitle', { original: interimTranscript, translated });
+            }
+          }, 300);
+
+          setSegments(prev => {
+            const filtered = prev.filter(s => s.isFinal);
+            const hasInterim = prev.some(s => s.id.startsWith('interim-'));
+
+            if (hasInterim) {
+              return prev.map(s => s.id.startsWith('interim-') ? { ...s, original: interimTranscript } : s);
+            } else {
+              return [...filtered, { id: interimId, original: interimTranscript, translated: '', isFinal: false }].slice(-10);
+            }
+          });
         }
       };
 
@@ -67,7 +96,7 @@ export default function Home() {
         if (isRecording) recognitionRef.current.start();
       };
     }
-  }, [sourceLang, targetLang, isRecording, llmModel]);
+  }, [sourceLang, targetLang, isRecording, llmModel, translationMode]);
 
   const toggleRecording = () => {
     if (!recognitionRef.current) return;
@@ -152,6 +181,18 @@ export default function Home() {
               {showSettings && (
                 <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div className="flex flex-col gap-2">
+                    <label className="text-xs text-slate-400 uppercase tracking-widest font-bold">Translation Strategy</label>
+                    <select
+                      value={translationMode}
+                      onChange={(e) => setTranslationMode(e.target.value)}
+                      className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
+                    >
+                      <option value="api">Accurate (Standard API)</option>
+                      <option value="fast">Ultra Fast (Google Client)</option>
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
                     <label className="text-xs text-slate-400 uppercase tracking-widest font-bold">LLM Assistant</label>
                     <select
                       value={llmModel}
@@ -162,8 +203,13 @@ export default function Home() {
                       <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
                       <option value="gemini-1.5-pro">Gemini 1.5 Pro (Accurate)</option>
                     </select>
+                    {translationMode === 'client' && llmModel !== 'none' && (
+                      <p className="text-[10px] text-amber-500 italic mt-1 font-medium">
+                        * LLM Refinement requires an API call, slightly slowing down the "Fast" mode.
+                      </p>
+                    )}
                     <p className="text-[10px] text-slate-500 italic mt-1">
-                      * Gemini is used automatically for Chinese translations.
+                      * Gemini is used automatically for Chinese translations on the server.
                     </p>
                   </div>
                 </div>
@@ -194,22 +240,76 @@ export default function Home() {
               <Languages className="w-5 h-5 text-indigo-400" /> Live Feedback
             </h2>
 
-            <div className="flex-1 space-y-8 overflow-y-auto pr-2 custom-scrollbar">
-              <div className="space-y-1">
-                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Original</span>
-                <p className="text-lg text-slate-300 italic">
-                  {transcript.original || "Speak to see transcription..."}
-                </p>
+            <div className="flex-1 space-y-6 overflow-y-auto pr-2 custom-scrollbar">
+              {/* Manual Translation Box */}
+              <div className="bg-slate-800/80 border border-indigo-500/30 p-4 rounded-2xl mb-4 shadow-lg animate-in fade-in zoom-in duration-300">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[10px] text-indigo-300 uppercase font-bold tracking-widest flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" /> Manual Translate (Pasted/Typed)
+                  </span>
+                  {manualText && (
+                    <button
+                      onClick={() => { setManualText(''); setManualTranslated(''); }}
+                      className="text-[10px] text-slate-500 hover:text-white transition-colors"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <textarea
+                  value={manualText}
+                  onChange={async (e) => {
+                    const text = e.target.value;
+                    setManualText(text);
+                    if (!text) {
+                      setManualTranslated('');
+                      return;
+                    }
+                    // Debounced real-time translation for textbox
+                    clearTimeout(window.manualTranslateTimer);
+                    window.manualTranslateTimer = setTimeout(async () => {
+                      const translated = await translateText(text, sourceLang.split('-')[0], targetLang, llmModel, translationMode);
+                      setManualTranslated(translated);
+                      if (socketRef.current) {
+                        socketRef.current.emit('send-subtitle', { original: text, translated });
+                      }
+                    }, 500);
+                  }}
+                  placeholder="Paste or type long text here for real-time translation..."
+                  className="w-full bg-slate-900/50 border border-slate-700/50 p-3 rounded-xl outline-none text-sm min-h-[100px] resize-y custom-scrollbar focus:border-indigo-500/50 transition-colors placeholder:text-slate-600"
+                />
+                {manualTranslated && (
+                  <div className="mt-4 pt-4 border-t border-slate-700 animate-in slide-in-from-top-2 duration-300">
+                    <span className="text-[10px] text-indigo-400 uppercase font-bold tracking-widest block mb-2">Translation Result</span>
+                    <p className="text-white text-lg font-medium leading-relaxed">
+                      {manualTranslated}
+                    </p>
+                  </div>
+                )}
               </div>
 
-              <div className="h-px bg-slate-800" />
-
-              <div className="space-y-1">
-                <span className="text-[10px] text-indigo-400 uppercase font-bold tracking-widest">Translated</span>
-                <p className="text-2xl text-white font-medium">
-                  {transcript.translated || "---"}
-                </p>
-              </div>
+              {segments.length === 0 && !manualText && (
+                <p className="text-slate-500 italic text-center mt-20">Speak or type to see translation...</p>
+              )}
+              {segments.map((segment) => (
+                <div key={segment.id} className={`space-y-2 transition-all duration-500 ${segment.isFinal ? 'opacity-100' : 'opacity-50'}`}>
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Original</span>
+                    <p className="text-lg text-slate-300 italic">
+                      {segment.original}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <span className={`text-[10px] uppercase font-bold tracking-widest ${segment.translated ? 'text-indigo-400' : 'text-slate-600 animate-pulse'}`}>
+                      Translated {!segment.translated && segment.isFinal && '(Processing...)'}
+                    </span>
+                    <p className={`text-2xl font-medium transition-all ${segment.translated ? 'text-white' : 'text-slate-600 blur-[2px]'}`}>
+                      {segment.translated || "---"}
+                    </p>
+                  </div>
+                  {segment.isFinal && <div className="h-px bg-slate-800 mt-4" />}
+                </div>
+              ))}
             </div>
           </div>
         </div>
