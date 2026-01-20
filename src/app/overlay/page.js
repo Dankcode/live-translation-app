@@ -1,17 +1,22 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { X } from 'lucide-react';
+import { X, Sparkles } from 'lucide-react';
 import io from 'socket.io-client';
+
+const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
 
 export default function OverlayPage() {
     const [subtitle, setSubtitle] = useState({ original: '', translated: '' });
     const [visible, setVisible] = useState(false);
+    const [showControls, setShowControls] = useState(false);
+    const [isClickThrough, setIsClickThrough] = useState(false);
     const socketRef = useRef(null);
 
     useEffect(() => {
-        // Add class to body for transparency
+        // Add class to body and html for transparency
         document.body.classList.add('bg-transparent-window');
+        document.documentElement.classList.add('bg-transparent-window');
 
         // Initialize socket
         socketRef.current = io();
@@ -20,42 +25,94 @@ export default function OverlayPage() {
             setSubtitle(data);
             setVisible(true);
 
-            // Auto-hide after 10 seconds of silence
+            // Auto-hide after 15 seconds of silence
             const timer = setTimeout(() => {
-                setVisible(false);
-            }, 10000);
+                if (!showControls) {
+                    setVisible(false);
+                }
+            }, 15000);
 
             return () => clearTimeout(timer);
         });
 
+        if (ipcRenderer) {
+            const subtitleHandler = (event, data) => {
+                setSubtitle(data);
+                setVisible(true);
+            };
+            ipcRenderer.on('receive-subtitle', subtitleHandler);
+            return () => {
+                ipcRenderer.removeListener('receive-subtitle', subtitleHandler);
+            };
+        }
+
         return () => {
             if (socketRef.current) socketRef.current.disconnect();
         };
-    }, []);
+    }, [showControls]);
 
     const handleClose = () => {
-        setVisible(false);
+        if (ipcRenderer) ipcRenderer.send('close-overlay');
+        else setVisible(false);
     };
 
-    if (!visible) return null;
+    const handleResize = (size) => {
+        if (!ipcRenderer) return;
+        const width = size === 'small' ? 800 : size === 'large' ? 1400 : 1200;
+        const height = size === 'small' ? 200 : size === 'large' ? 400 : 300;
+        ipcRenderer.send('resize-overlay', { width, height });
+    };
+
+    const toggleClickThrough = () => {
+        const next = !isClickThrough;
+        setIsClickThrough(next);
+        if (ipcRenderer) ipcRenderer.send('set-ignore-mouse', next);
+    };
+
+    if (!visible && !showControls) return null;
 
     return (
-        <div className={`flex flex-col items-center justify-center h-full w-full p-8 group overflow-hidden transition-opacity duration-500 ${visible ? 'opacity-100' : 'opacity-0'} drag-region`}>
+        <div className={`flex flex-col items-center justify-center h-full w-full p-8 group overflow-hidden transition-all duration-500 ${visible || showControls ? 'opacity-100' : 'opacity-0'} ${isClickThrough ? 'pointer-events-none' : 'hover:bg-slate-900/10'}`}>
             <div
-                className="relative bg-black/60 backdrop-blur-2xl rounded-3xl p-8 border-2 border-white/20 shadow-[0_20px_60px_rgba(0,0,0,0.8)] max-w-[95%] w-full text-center transform transition-transform duration-300 scale-100 group-hover:scale-[1.01] overflow-visible"
-                style={{ WebkitAppRegion: 'drag' }}
+                className={`relative bg-black/60 backdrop-blur-3xl rounded-3xl p-8 border-2 ${isClickThrough ? 'border-transparent' : 'border-white/20 group-hover:border-white/40'} shadow-[0_20px_60px_rgba(0,0,0,0.8)] max-w-[95%] w-full text-center transform transition-all duration-300 scale-100 group-hover:scale-[1.01] overflow-visible pointer-events-auto`}
+                style={{ WebkitAppRegion: isClickThrough ? 'none' : 'drag' }}
             >
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-[10px] px-3 py-1 rounded-full font-bold uppercase tracking-widest shadow-lg no-drag">
-                    Draggable Overlay
+                {/* Control Bar (Visible on hover) */}
+                <div className="absolute -top-12 left-1/2 -translate-x-1/2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity no-drag p-2 bg-slate-900/80 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl">
+                    <button
+                        onClick={() => handleResize('small')}
+                        className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors"
+                    >
+                        Small
+                    </button>
+                    <button
+                        onClick={() => handleResize('medium')}
+                        className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors"
+                    >
+                        Med
+                    </button>
+                    <button
+                        onClick={() => handleResize('large')}
+                        className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors"
+                    >
+                        Large
+                    </button>
+                    <div className="w-px h-4 bg-white/10 mx-1" />
+                    <button
+                        onClick={toggleClickThrough}
+                        className={`p-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${isClickThrough ? 'bg-indigo-600 text-white' : 'hover:bg-white/10 text-slate-400'}`}
+                        title="Click Through Mode (Ignore Mouse)"
+                    >
+                        {isClickThrough ? <Sparkles className="w-3 h-3" /> : null} Mouse Lock
+                    </button>
+                    <div className="w-px h-4 bg-white/10 mx-1" />
+                    <button
+                        onClick={handleClose}
+                        className="p-2 hover:bg-red-500/20 text-red-400 hover:text-red-300 rounded-xl transition-colors"
+                    >
+                        <X className="w-4 h-4" />
+                    </button>
                 </div>
-
-                <button
-                    onClick={handleClose}
-                    className="absolute top-4 right-4 bg-white/10 hover:bg-white/20 text-white/50 hover:text-white rounded-full p-2 opacity-0 group-hover:opacity-100 transition-all border border-white/10 no-drag"
-                    title="Close Overlay"
-                >
-                    <X className="w-5 h-5" />
-                </button>
 
                 <div className="space-y-4">
                     <p className="text-blue-400/90 text-sm font-bold uppercase tracking-[0.2em] drop-shadow-sm select-none">
@@ -66,17 +123,25 @@ export default function OverlayPage() {
                     </p>
                 </div>
 
-                {/* Resize indicator in corner */}
-                <div className="absolute bottom-1 right-1 w-4 h-4 border-r-2 border-b-2 border-white/20 rounded-br-lg opacity-40 select-none group-hover:opacity-100 transition-opacity" />
+                {!isClickThrough && (
+                    <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-blue-600/80 text-white text-[9px] px-3 py-1 rounded-full font-bold uppercase tracking-widest shadow-lg opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-md">
+                        Draggable Region
+                    </div>
+                )}
             </div>
 
-            <style jsx>{`
-                .drag-region {
-                    cursor: move;
+            <style jsx global>{`
+                html, body {
+                    background: transparent !important;
+                    background-color: transparent !important;
                 }
+                main {
+                    background: transparent !important;
+                }
+            `}</style>
+            <style jsx>{`
                 .no-drag {
                     -webkit-app-region: no-drag;
-                    cursor: default;
                 }
             `}</style>
         </div>

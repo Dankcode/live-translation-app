@@ -25,7 +25,8 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
-.bg-transparent-window body {
+html.bg-transparent-window,
+body.bg-transparent-window {
   background: transparent !important;
 }
 

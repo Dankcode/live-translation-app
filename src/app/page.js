@@ -3,7 +3,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff, Settings, Monitor, Languages, Sparkles } from 'lucide-react';
 import { translateText } from '@/lib/translator';
+import { AudioTranscriber } from '@/lib/transcriber';
 import io from 'socket.io-client';
+
+const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
 
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
@@ -13,12 +16,43 @@ export default function Home() {
   const [translationMode, setTranslationMode] = useState('api');
   const [showSettings, setShowSettings] = useState(false);
   const [segments, setSegments] = useState([]); // Array of { id, original, translated, isFinal }
+
+  // Settings for Voice Recognition
+  const [sttProvider, setSttProvider] = useState('whisper');
+  const [openaiKey, setOpenaiKey] = useState('');
+  const [geminiKey, setGeminiKey] = useState('');
+
   const [manualText, setManualText] = useState('');
   const [manualTranslated, setManualTranslated] = useState('');
 
-  const recognitionRef = useRef(null);
+  const transcriberRef = useRef(null);
   const socketRef = useRef(null);
-  const segmentsRef = useRef([]); // Use ref to avoid stale closure in onresult
+
+  // Load settings from localStorage
+  useEffect(() => {
+    const savedSttProvider = localStorage.getItem('sttProvider');
+    const savedOpenaiKey = localStorage.getItem('openaiKey');
+    const savedGeminiKey = localStorage.getItem('geminiKey');
+
+    if (savedSttProvider) setSttProvider(savedSttProvider);
+    if (savedOpenaiKey) setOpenaiKey(savedOpenaiKey);
+    if (savedGeminiKey) setGeminiKey(savedGeminiKey);
+  }, []);
+
+  // Save settings to localStorage
+  useEffect(() => {
+    localStorage.setItem('sttProvider', sttProvider);
+    localStorage.setItem('openaiKey', openaiKey);
+    localStorage.setItem('geminiKey', geminiKey);
+
+    // Update transcriber if it exists
+    if (transcriberRef.current) {
+      transcriberRef.current.setOptions({
+        provider: sttProvider,
+        apiKey: sttProvider === 'whisper' ? openaiKey : geminiKey
+      });
+    }
+  }, [sttProvider, openaiKey, geminiKey]);
 
   useEffect(() => {
     // Initialize socket
@@ -31,82 +65,49 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && ('WebkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      const SpeechRecognition = window.SpeechRecognition || window.WebkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
+    // Initialize transcriber
+    transcriberRef.current = new AudioTranscriber(async (text) => {
+      if (!text || text.trim().length === 0) return;
 
-      recognitionRef.current.onresult = async (event) => {
-        let interimTranscript = '';
-        const finalSegments = [];
-        const now = Date.now();
+      const id = 'transcript-' + Date.now();
 
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const text = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            const id = 'final-' + i + '-' + now;
-            finalSegments.push({ id, original: text, translated: '', isFinal: true });
+      // Since Whisper/Gemini are naturally "final" in its chunks
+      const translated = await translateText(text, sourceLang.split('-')[0], targetLang, llmModel, translationMode);
 
-            // Trigger translation for this final segment
-            translateText(text, sourceLang.split('-')[0], targetLang, llmModel, translationMode).then(translated => {
-              setSegments(prev => prev.map(s => s.id === id ? { ...s, translated } : s));
-              if (socketRef.current) {
-                socketRef.current.emit('send-subtitle', { original: text, translated });
-              }
-            });
-          } else {
-            interimTranscript += text;
-          }
-        }
+      setSegments(prev => {
+        const result = [...prev, { id, original: text, translated, isFinal: true }];
+        return result.slice(-10);
+      });
 
-        // Real-time (interim) translation logic
-        if (interimTranscript) {
-          const interimId = 'interim-' + now;
+      if (socketRef.current) {
+        socketRef.current.emit('send-subtitle', { original: text, translated });
+      }
+      if (ipcRenderer) {
+        ipcRenderer.send('send-subtitle', { original: text, translated });
+      }
+    }, {
+      provider: sttProvider,
+      apiKey: sttProvider === 'whisper' ? openaiKey : geminiKey
+    });
 
-          // Debounce interim translation to avoid flooding the API
-          clearTimeout(window.interimTranslateTimer);
-          window.interimTranslateTimer = setTimeout(async () => {
-            const translated = await translateText(interimTranscript, sourceLang.split('-')[0], targetLang, llmModel, translationMode);
-            setSegments(prev => prev.map(s => s.id.startsWith('interim-') ? { ...s, translated } : s));
-            if (socketRef.current) {
-              socketRef.current.emit('send-subtitle', { original: interimTranscript, translated });
-            }
-          }, 300);
-
-          setSegments(prev => {
-            const filtered = prev.filter(s => s.isFinal);
-            const hasInterim = prev.some(s => s.id.startsWith('interim-'));
-
-            if (hasInterim) {
-              return prev.map(s => s.id.startsWith('interim-') ? { ...s, original: interimTranscript } : s);
-            } else {
-              return [...filtered, { id: interimId, original: interimTranscript, translated: '', isFinal: false }].slice(-10);
-            }
-          });
-        }
-      };
-
-      recognitionRef.current.onerror = (event) => {
-        console.error('Speech recognition error', event.error);
-        setIsRecording(false);
-      };
-
-      recognitionRef.current.onend = () => {
-        if (isRecording) recognitionRef.current.start();
-      };
-    }
-  }, [sourceLang, targetLang, isRecording, llmModel, translationMode]);
+    return () => {
+      if (transcriberRef.current) transcriberRef.current.stop();
+    };
+  }, [sourceLang, targetLang, llmModel, translationMode]); // sttProvider and keys are handled by setOptions in their own useEffect
 
   const toggleRecording = () => {
-    if (!recognitionRef.current) return;
+    if (!transcriberRef.current) return;
 
     if (isRecording) {
-      recognitionRef.current.stop();
+      transcriberRef.current.stop();
       setIsRecording(false);
     } else {
-      recognitionRef.current.lang = sourceLang;
-      recognitionRef.current.start();
+      // Ensure latest options before starting
+      transcriberRef.current.setOptions({
+        provider: sttProvider,
+        apiKey: sttProvider === 'whisper' ? openaiKey : geminiKey
+      });
+      transcriberRef.current.start();
       setIsRecording(true);
     }
   };
@@ -168,7 +169,7 @@ export default function Home() {
             <section className="bg-slate-800/50 border border-slate-700 p-6 rounded-3xl space-y-4 shadow-xl">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold flex items-center gap-2 text-indigo-300">
-                  <Sparkles className="w-5 h-5 text-indigo-400" /> AI Refinement
+                  <Sparkles className="w-5 h-5 text-indigo-400" /> Settings
                 </h2>
                 <button
                   onClick={() => setShowSettings(!showSettings)}
@@ -179,38 +180,81 @@ export default function Home() {
               </div>
 
               {showSettings && (
-                <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-2 duration-200">
-                  <div className="flex flex-col gap-2">
-                    <label className="text-xs text-slate-400 uppercase tracking-widest font-bold">Translation Strategy</label>
-                    <select
-                      value={translationMode}
-                      onChange={(e) => setTranslationMode(e.target.value)}
-                      className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
-                    >
-                      <option value="api">Accurate (Standard API)</option>
-                      <option value="fast">Ultra Fast (Google Client)</option>
-                    </select>
+                <div className="space-y-6 pt-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                  {/* Transcription Provider Section */}
+                  <div className="space-y-4 p-4 bg-slate-900/50 rounded-2xl border border-slate-800">
+                    <h3 className="text-xs text-indigo-300 uppercase font-bold tracking-widest">Voice Recognition</h3>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs text-slate-400">Provider</label>
+                      <select
+                        value={sttProvider}
+                        onChange={(e) => setSttProvider(e.target.value)}
+                        className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
+                      >
+                        <option value="whisper">OpenAI Whisper (Cloud)</option>
+                        <option value="gemini">Google Gemini (Multi-modal)</option>
+                      </select>
+                    </div>
+
+                    {sttProvider === 'whisper' && (
+                      <div className="flex flex-col gap-2">
+                        <label className="text-xs text-slate-400">OpenAI API Key</label>
+                        <input
+                          type="password"
+                          value={openaiKey}
+                          onChange={(e) => setOpenaiKey(e.target.value)}
+                          placeholder="sk-..."
+                          className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
+                        />
+                      </div>
+                    )}
+
+                    {sttProvider === 'gemini' && (
+                      <div className="flex flex-col gap-2">
+                        <label className="text-xs text-slate-400">Gemini API Key</label>
+                        <input
+                          type="password"
+                          value={geminiKey}
+                          onChange={(e) => setGeminiKey(e.target.value)}
+                          placeholder="Your AI Studio Key"
+                          className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
+                        />
+                      </div>
+                    )}
                   </div>
 
-                  <div className="flex flex-col gap-2">
-                    <label className="text-xs text-slate-400 uppercase tracking-widest font-bold">LLM Assistant</label>
-                    <select
-                      value={llmModel}
-                      onChange={(e) => setLlmModel(e.target.value)}
-                      className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
-                    >
-                      <option value="none">Default (No LLM)</option>
-                      <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
-                      <option value="gemini-1.5-pro">Gemini 1.5 Pro (Accurate)</option>
-                    </select>
-                    {translationMode === 'client' && llmModel !== 'none' && (
-                      <p className="text-[10px] text-amber-500 italic mt-1 font-medium">
-                        * LLM Refinement requires an API call, slightly slowing down the "Fast" mode.
-                      </p>
-                    )}
-                    <p className="text-[10px] text-slate-500 italic mt-1">
-                      * Gemini is used automatically for Chinese translations on the server.
-                    </p>
+                  {/* Translation Settings */}
+                  <div className="space-y-4 p-4 bg-slate-900/50 rounded-2xl border border-slate-800">
+                    <h3 className="text-xs text-indigo-300 uppercase font-bold tracking-widest">Translation Engine</h3>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs text-slate-400 uppercase tracking-widest font-bold">Translation Strategy</label>
+                      <select
+                        value={translationMode}
+                        onChange={(e) => setTranslationMode(e.target.value)}
+                        className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
+                      >
+                        <option value="api">Accurate (Standard API)</option>
+                        <option value="fast">Ultra Fast (Google Client)</option>
+                      </select>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs text-slate-400 uppercase tracking-widest font-bold">LLM Assistant</label>
+                      <select
+                        value={llmModel}
+                        onChange={(e) => setLlmModel(e.target.value)}
+                        className="bg-slate-900 border border-slate-700 p-3 rounded-xl outline-none text-sm"
+                      >
+                        <option value="none">Default (No LLM)</option>
+                        <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
+                        <option value="gemini-1.5-pro">Gemini 1.5 Pro (Accurate)</option>
+                      </select>
+                      {translationMode === 'fast' && llmModel !== 'none' && (
+                        <p className="text-[10px] text-amber-500 italic mt-1 font-medium">
+                          * LLM Refinement requires an API call, slightly slowing down the "Fast" mode.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -272,6 +316,9 @@ export default function Home() {
                       setManualTranslated(translated);
                       if (socketRef.current) {
                         socketRef.current.emit('send-subtitle', { original: text, translated });
+                      }
+                      if (ipcRenderer) {
+                        ipcRenderer.send('send-subtitle', { original: text, translated });
                       }
                     }, 500);
                   }}
