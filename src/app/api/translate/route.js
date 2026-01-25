@@ -1,49 +1,33 @@
-import baiduTranslate from 'baidu-translate-api';
-import { geminiTranslate, geminiRefine } from '@/lib/gemini';
 import translate from 'google-translate-api-next';
+import { geminiTranslate, geminiRefine } from '@/lib/gemini';
 
 export async function POST(request) {
-    const { text, from, to, llmModel } = await request.json();
-
     try {
+        const body = await request.json();
+        const { text, from, to, llmModel } = body;
+
+        if (!text) {
+            return new Response(JSON.stringify({ error: "Text is required" }), { status: 400 });
+        }
+
         let resultText = '';
 
-        // Use Baidu Translate API as primary
-        try {
-            const bFrom = from.split('-')[0].toLowerCase();
-            const bTo = to.split('-')[0].toLowerCase();
-
-            const res = await baiduTranslate(text, { from: bFrom, to: bTo });
-            resultText = res.trans_result.dst;
-        } catch (baiduErr) {
-            console.error('Baidu API Error:', baiduErr);
-            // Fallback to Gemini if Baidu fails
-            try {
-                resultText = await geminiTranslate(text, from, to, llmModel || 'gemini-1.5-flash');
-            } catch (geminiErr) {
-                console.error('Gemini fallback failed:', geminiErr);
-            }
+        // Use Gemini for Chinese translation if it fails or if specifically requested
+        if (to === 'zh' || to.startsWith('zh-')) {
+            console.log("[API] Using Gemini for Chinese translation...");
+            resultText = await geminiTranslate(text, from, to, llmModel || 'gemini-1.5-flash');
         }
 
-        // If both Baidu and Gemini fail, use Google Translate as last resort
+        // If not Chinese or if Gemini failed, use the default translator
         if (!resultText) {
-            try {
-                const gFrom = from === 'zh' ? 'zh-CN' : from;
-                const gTo = to === 'zh' ? 'zh-CN' : to;
-                const res = await translate(text, { from: gFrom, to: gTo });
-                resultText = res.text;
-            } catch (googleErr) {
-                console.error('Google fallback failed:', googleErr);
-            }
+            console.log("[API] Using fallback google-translate-api-next...");
+            const res = await translate(text, { from, to });
+            resultText = res.text;
         }
 
-        // If absolutely everything fails, return original text
-        if (!resultText) {
-            resultText = text;
-        }
-
-        // Apply LLM refinement if a model is selected
+        // Apply LLM refinement if a model is selected and it's not already handled by Gemini translation refinedly
         if (llmModel && llmModel !== 'none') {
+            console.log(`[API] Applying Gemini refinement with model: ${llmModel}`);
             resultText = await geminiRefine(text, resultText, from, to, llmModel);
         }
 
@@ -51,11 +35,8 @@ export async function POST(request) {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
-    } catch (err) {
-        console.error('API Translation Catch-all error:', err);
-        return new Response(JSON.stringify({ error: 'Translation failed', text }), {
-            status: 200, // Return 200 with original text to avoid crashing the frontend
-            headers: { 'Content-Type': 'application/json' },
-        });
+    } catch (error) {
+        console.error("[API] Translation Route Error:", error);
+        return new Response(JSON.stringify({ error: error.message }), { status: 500 });
     }
 }

@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { X, Sparkles } from 'lucide-react';
-import io from 'socket.io-client';
 
 const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
 
@@ -11,45 +10,58 @@ export default function OverlayPage() {
     const [visible, setVisible] = useState(false);
     const [showControls, setShowControls] = useState(false);
     const [isClickThrough, setIsClickThrough] = useState(false);
-    const socketRef = useRef(null);
+
+    const lastTimestampRef = useRef(0);
 
     useEffect(() => {
         // Add class to body and html for transparency
         document.body.classList.add('bg-transparent-window');
         document.documentElement.classList.add('bg-transparent-window');
 
-        // Initialize socket
-        socketRef.current = io();
-
-        socketRef.current.on('receive-subtitle', (data) => {
-            setSubtitle(data);
-            setVisible(true);
-
-            // Auto-hide after 15 seconds of silence
-            const timer = setTimeout(() => {
-                if (!showControls) {
-                    setVisible(false);
-                }
-            }, 15000);
-
-            return () => clearTimeout(timer);
-        });
-
+        // 1. IPC Listener (for local Electron STT)
+        let subtitleHandler;
         if (ipcRenderer) {
-            const subtitleHandler = (event, data) => {
+            subtitleHandler = (event, data) => {
                 setSubtitle(data);
                 setVisible(true);
             };
             ipcRenderer.on('receive-subtitle', subtitleHandler);
-            return () => {
-                ipcRenderer.removeListener('receive-subtitle', subtitleHandler);
-            };
         }
 
-        return () => {
-            if (socketRef.current) socketRef.current.disconnect();
+        // 2. API Polling (for Browser Bridge Mode)
+        const pollBridge = async () => {
+            try {
+                const res = await fetch('/api/bridge');
+                const data = await res.json();
+
+                // Only update if the data is fresh
+                if (data.timestamp > lastTimestampRef.current) {
+                    lastTimestampRef.current = data.timestamp;
+                    if (data.original || data.translated) {
+                        setSubtitle({ original: data.original, translated: data.translated });
+                        setVisible(true);
+                    } else {
+                        // If everything is empty, we might want to clear or keep existing
+                        // For now, let's just clear if it's explicitly empty
+                        if (data.original === '' && data.translated === '') {
+                            setSubtitle({ original: '', translated: '' });
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Bridge poll failed:", e);
+            }
         };
-    }, [showControls]);
+
+        const interval = setInterval(pollBridge, 1000);
+
+        return () => {
+            if (ipcRenderer && subtitleHandler) {
+                ipcRenderer.removeListener('receive-subtitle', subtitleHandler);
+            }
+            clearInterval(interval);
+        };
+    }, []);
 
     const handleClose = () => {
         if (ipcRenderer) ipcRenderer.send('close-overlay');
@@ -115,12 +127,16 @@ export default function OverlayPage() {
                 </div>
 
                 <div className="space-y-4">
-                    <p className="text-blue-400/90 text-sm font-bold uppercase tracking-[0.2em] drop-shadow-sm select-none">
-                        {subtitle.original || "Listening..."}
-                    </p>
                     <p className="text-white text-4xl font-extrabold leading-tight tracking-tight drop-shadow-2xl select-none break-words">
-                        {subtitle.translated}
+                        {subtitle.translated || subtitle.original || "..."}
                     </p>
+                    {subtitle.translated && subtitle.original && (
+                        <div className="pt-2 border-t border-white/10">
+                            <p className="text-blue-300 text-xl font-bold italic select-none opacity-80">
+                                {subtitle.original}
+                            </p>
+                        </div>
+                    )}
                 </div>
 
                 {!isClickThrough && (
