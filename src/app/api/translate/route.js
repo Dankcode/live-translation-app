@@ -21,7 +21,10 @@ export async function POST(request) {
         // If not Chinese or if Gemini failed, use the default translator
         if (!resultText) {
             console.log("[API] Using fallback google-translate-api-next...");
-            const res = await translate(text, { from, to });
+            // google-translate-api-next requires 'zh-CN' or 'zh-TW', 'zh' is not supported
+            const sourceLang = from === 'zh' ? 'zh-CN' : from;
+            const targetLang = to === 'zh' ? 'zh-CN' : to;
+            const res = await translate(text, { from: sourceLang, to: targetLang });
             resultText = res.text;
         }
 
