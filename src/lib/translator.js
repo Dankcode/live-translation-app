@@ -30,7 +30,7 @@ async function googleTranslateGET(text, from, to) {
     }
 }
 
-export async function translateText(text, from, to, llmModel = 'none') {
+export async function translateText(text, from, to, llmModel = 'none', apiKey = null) {
     if (!text || text.trim().length === 0) return '';
 
     try {
@@ -40,7 +40,7 @@ export async function translateText(text, from, to, llmModel = 'none') {
         const response = await fetch('/api/translate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, from: sl, to: tl, llmModel })
+            body: JSON.stringify({ text, from: sl, to: tl, llmModel, apiKey })
         });
 
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
