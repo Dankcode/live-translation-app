@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, MicOff, Settings, Monitor, Languages, Sparkles, ChevronDown, Check, ExternalLink } from 'lucide-react';
 import { translateText } from '@/lib/translator';
 
-const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
+const { ipcRenderer } = (typeof window !== 'undefined' && typeof window.require === 'function') ? window.require('electron') : { ipcRenderer: null };
 
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
@@ -15,8 +15,13 @@ export default function Home() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [llmModel, setLlmModel] = useState('none');
+  const [hasMounted, setHasMounted] = useState(false);
 
   const recognitionRef = useRef(null);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
 
   const isElectron = typeof window !== 'undefined' &&
     window.process &&
@@ -135,7 +140,7 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-10 font-sans selection:bg-blue-500/30">
+    <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-10 font-sans selection:bg-blue-500/30" suppressHydrationWarning>
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <header className="flex items-center gap-3 mb-10">
@@ -313,7 +318,7 @@ export default function Home() {
             </div>
 
             {/* Visual Equalizer / Active Indicator */}
-            {isRecording && (
+            {isRecording && hasMounted && (
               <div className="mt-auto flex gap-1 items-end h-8 overflow-hidden opacity-50">
                 {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6].map((i, idx) => (
                   <div
@@ -332,25 +337,7 @@ export default function Home() {
         </div>
       </div>
 
-      <style jsx global>{`
-        @keyframes wave {
-          0%, 100% { transform: scaleY(0.5); }
-          50% { transform: scaleY(1.5); }
-        }
-        .animate-wave {
-          animation: wave linear infinite;
-        }
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #334155;
-          border-radius: 10px;
-        }
-      `}</style>
+
     </main>
   );
 }
