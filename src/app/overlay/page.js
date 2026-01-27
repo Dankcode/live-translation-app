@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { X, Sparkles } from 'lucide-react';
+import { X, Sparkles, GripVertical } from 'lucide-react';
 
 const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
 
@@ -9,7 +9,7 @@ export default function OverlayPage() {
     const [subtitle, setSubtitle] = useState({ original: '', translated: '' });
     const [visible, setVisible] = useState(false);
     const [showControls, setShowControls] = useState(false);
-    const [isClickThrough, setIsClickThrough] = useState(true);
+    const [isClickThrough, setIsClickThrough] = useState(false);
 
     const lastTimestampRef = useRef(0);
 
@@ -21,16 +21,25 @@ export default function OverlayPage() {
         // 1. IPC Listener (for local Electron STT)
         let subtitleHandler;
         if (ipcRenderer) {
-            // Default: click-through overlay so main window stays operable.
-            ipcRenderer.send('set-ignore-mouse', true);
+            // Interactive by default so it can be dragged immediately.
+            ipcRenderer.send('set-ignore-mouse', false);
             subtitleHandler = (event, data) => {
                 setSubtitle(data);
                 setVisible(true);
             };
             ipcRenderer.on('receive-subtitle', subtitleHandler);
-        }
 
-        // 2. API Polling (for Browser Bridge Mode)
+            const lockHandler = (event, ignore) => {
+                setIsClickThrough(ignore);
+            };
+            ipcRenderer.on('overlay-lock-status', lockHandler);
+
+            return () => {
+                ipcRenderer.removeListener('receive-subtitle', subtitleHandler);
+                ipcRenderer.removeListener('overlay-lock-status', lockHandler);
+                clearInterval(interval);
+            };
+        }
         const pollBridge = async () => {
             try {
                 const res = await fetch('/api/bridge');
@@ -56,18 +65,14 @@ export default function OverlayPage() {
         };
 
         const interval = setInterval(pollBridge, 1000);
-
-        return () => {
-            if (ipcRenderer && subtitleHandler) {
-                ipcRenderer.removeListener('receive-subtitle', subtitleHandler);
-            }
-            clearInterval(interval);
-        };
     }, []);
 
     const handleClose = () => {
-        if (ipcRenderer) ipcRenderer.send('close-overlay');
-        else setVisible(false);
+        if (ipcRenderer) {
+            ipcRenderer.send('close-overlay');
+        } else {
+            setVisible(false);
+        }
     };
 
     const handleResize = (size) => {
@@ -79,18 +84,27 @@ export default function OverlayPage() {
 
     const toggleClickThrough = () => {
         const next = !isClickThrough;
-        setIsClickThrough(next);
-        if (ipcRenderer) ipcRenderer.send('set-ignore-mouse', next);
+        if (ipcRenderer) {
+            ipcRenderer.send('set-ignore-mouse', next);
+        } else {
+            setIsClickThrough(next);
+        }
     };
 
-    if (!visible && !showControls) return null;
+    const isEmpty = !subtitle.translated && !subtitle.original;
 
     return (
-        <div className={`flex flex-col items-center justify-center h-full w-full p-8 group overflow-hidden transition-all duration-500 ${visible || showControls ? 'opacity-100' : 'opacity-0'} ${isClickThrough ? 'pointer-events-none' : 'hover:bg-slate-900/10'}`}>
+        <div className={`flex flex-col items-center justify-center h-full w-full p-12 group overflow-hidden transition-all duration-500 hover:bg-slate-900/5 ${isClickThrough ? 'pointer-events-none' : ''}`}>
             <div
-                className={`relative bg-black/60 backdrop-blur-3xl rounded-3xl p-8 border-2 ${isClickThrough ? 'border-transparent' : 'border-white/20 group-hover:border-white/40'} shadow-[0_20px_60px_rgba(0,0,0,0.8)] max-w-[95%] w-full text-center transform transition-all duration-300 scale-100 group-hover:scale-[1.01] overflow-visible pointer-events-auto`}
+                className={`relative bg-black/60 backdrop-blur-3xl rounded-3xl p-10 border-2 ${isClickThrough ? 'border-transparent' : 'border-white/20 group-hover:border-white/40'} shadow-[0_20px_60px_rgba(0,0,0,0.8)] max-w-[95%] w-full text-center transform transition-all duration-300 scale-100 group-hover:scale-[1.01] overflow-visible pointer-events-auto`}
                 style={{ WebkitAppRegion: isClickThrough ? 'none' : 'drag' }}
             >
+                {/* Top-Left Anchor Handle */}
+                {!isClickThrough && (
+                    <div className="absolute -top-3 -left-3 bg-blue-600 p-1.5 rounded-lg shadow-xl cursor-grab active:cursor-grabbing hover:scale-110 transition-transform">
+                        <GripVertical className="w-5 h-5 text-white" />
+                    </div>
+                )}
                 {/* Control Bar (Visible on hover) */}
                 <div className="absolute -top-12 left-1/2 -translate-x-1/2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity no-drag p-2 bg-slate-900/80 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl">
                     <button
@@ -129,21 +143,29 @@ export default function OverlayPage() {
                 </div>
 
                 <div className="space-y-4">
-                    <p className="text-white text-4xl font-extrabold leading-tight tracking-tight drop-shadow-2xl select-none break-words">
-                        {subtitle.translated || subtitle.original || "..."}
-                    </p>
-                    {subtitle.translated && subtitle.original && (
-                        <div className="pt-2 border-t border-white/10">
-                            <p className="text-blue-300 text-xl font-bold italic select-none opacity-80">
-                                {subtitle.original}
+                    {isEmpty ? (
+                        <p className="text-white/40 text-2xl font-bold italic tracking-tight select-none animate-pulse">
+                            Waiting for input...
+                        </p>
+                    ) : (
+                        <>
+                            <p className="text-white text-4xl font-extrabold leading-tight tracking-tight drop-shadow-2xl select-none break-words">
+                                {subtitle.translated || subtitle.original}
                             </p>
-                        </div>
+                            {subtitle.translated && subtitle.original && (
+                                <div className="pt-2 border-t border-white/10">
+                                    <p className="text-blue-300 text-xl font-bold italic select-none opacity-80">
+                                        {subtitle.original}
+                                    </p>
+                                </div>
+                            )}
+                        </>
                     )}
                 </div>
 
                 {!isClickThrough && (
                     <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-blue-600/80 text-white text-[9px] px-3 py-1 rounded-full font-bold uppercase tracking-widest shadow-lg opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-md">
-                        Draggable Region
+                        Drag to reposition
                     </div>
                 )}
             </div>
