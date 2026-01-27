@@ -9,7 +9,7 @@ export default function OverlayPage() {
     const [subtitle, setSubtitle] = useState({ original: '', translated: '' });
     const [visible, setVisible] = useState(false);
     const [showControls, setShowControls] = useState(false);
-    const [isClickThrough, setIsClickThrough] = useState(false);
+    const [isClickThrough, setIsClickThrough] = useState(true);
 
     const lastTimestampRef = useRef(0);
 
@@ -21,6 +21,8 @@ export default function OverlayPage() {
         // 1. IPC Listener (for local Electron STT)
         let subtitleHandler;
         if (ipcRenderer) {
+            // Default: click-through overlay so main window stays operable.
+            ipcRenderer.send('set-ignore-mouse', true);
             subtitleHandler = (event, data) => {
                 setSubtitle(data);
                 setVisible(true);

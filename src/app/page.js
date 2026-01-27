@@ -326,7 +326,7 @@ export default function Home() {
                   : 'bg-slate-800/40 border-slate-700/50 text-slate-500 hover:border-slate-500'
                   }`}
               >
-                <span>Presenter Overlay</span>
+                <span>{overlayVisible ? 'Close Presenter Overlay' : 'Open Presenter Overlay'}</span>
                 <div className={`w-2 h-2 rounded-full ${overlayVisible ? 'bg-blue-400 animate-pulse' : 'bg-slate-700'}`}></div>
               </button>
             </div>
