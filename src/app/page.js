@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Mic, MicOff, Settings, Monitor, Languages, Sparkles, ChevronDown, Check, ExternalLink } from 'lucide-react';
+import { Mic, MicOff, Settings, Monitor, Languages, Sparkles, ChevronDown, Key } from 'lucide-react';
 import { translateText } from '@/lib/translator';
 
 const { ipcRenderer } = (typeof window !== 'undefined' && typeof window.require === 'function') ? window.require('electron') : { ipcRenderer: null };
@@ -12,126 +12,161 @@ export default function Home() {
   const [targetLang, setTargetLang] = useState('es');
   const [transcript, setTranscript] = useState({ original: '', translated: '' });
   const [overlayVisible, setOverlayVisible] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [llmModel, setLlmModel] = useState('none');
   const [hasMounted, setHasMounted] = useState(false);
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [cloudApiKey, setCloudApiKey] = useState('');
+  const [sttMode, setSttMode] = useState('gemini'); // 'gemini' or 'cloud'
+  const [sttError, setSttError] = useState('');
 
-  const recognitionRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const isRecordingRef = useRef(false);
+  const targetLangRef = useRef(targetLang);
+  const llmModelRef = useRef(llmModel);
+  const recordingIntervalRef = useRef(null);
 
   useEffect(() => {
     setHasMounted(true);
-  }, []);
-
-  const isElectron = typeof window !== 'undefined' &&
-    window.process &&
-    window.process.type === 'renderer';
-
-  // Check authentication on mount and after login
-  const checkAuth = useCallback(() => {
-    if (ipcRenderer) {
-      ipcRenderer.send('check-google-auth');
-    }
+    // Load saved keys
+    const savedGemini = localStorage.getItem('google_gemini_api_key');
+    const savedCloud = localStorage.getItem('google_cloud_stt_api_key');
+    if (savedGemini) setGeminiApiKey(savedGemini);
+    if (savedCloud) setCloudApiKey(savedCloud);
   }, []);
 
   useEffect(() => {
+    localStorage.setItem('google_gemini_api_key', geminiApiKey);
+    localStorage.setItem('google_cloud_stt_api_key', cloudApiKey);
+  }, [geminiApiKey, cloudApiKey]);
+
+  // Sync refs with state
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+    targetLangRef.current = targetLang;
+    llmModelRef.current = llmModel;
+  }, [isRecording, targetLang, llmModel]);
+
+  useEffect(() => {
     if (ipcRenderer) {
-      ipcRenderer.on('google-auth-status', (event, status) => {
-        setIsAuthenticated(status);
-        console.log("[Auth] Status:", status);
-      });
-
-      ipcRenderer.on('auth-finished', () => {
-        setIsLoggingIn(false);
-        checkAuth();
-      });
-
       ipcRenderer.on('overlay-status', (event, status) => {
         setOverlayVisible(status);
       });
-
       ipcRenderer.send('get-overlay-status');
-      checkAuth();
-    }
-  }, [checkAuth]);
-
-  // Recognition restart logic
-  const startRecognition = useCallback(() => {
-    if (!recognitionRef.current) return;
-    try {
-      recognitionRef.current.start();
-    } catch (e) {
-      console.error("Recognition start error:", e);
     }
   }, []);
 
-  useEffect(() => {
-    const SpeechRecognition = typeof window !== 'undefined' && (window.webkitSpeechRecognition || window.SpeechRecognition);
+  const processAudio = async (blob) => {
+    try {
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      reader.onloadend = async () => {
+        try {
+          const base64Audio = reader.result.split(',')[1];
 
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = sourceLang;
+          // Use the selected engine's API Key
+          const currentKey = sttMode === 'cloud' ? cloudApiKey : geminiApiKey;
 
-      recognition.onresult = async (event) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
+          const response = await fetch('/api/stt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              audio: base64Audio,
+              languageCode: sourceLang,
+              apiKey: currentKey,
+              sttMode: sttMode
+            })
+          });
 
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
-          } else {
-            interimTranscript += event.results[i][0].transcript;
+        const data = await response.json();
+        if (!response.ok || data.error) {
+          const retryAfterSeconds = typeof data.retryAfterSeconds === 'number' ? data.retryAfterSeconds : null;
+          const message = retryAfterSeconds != null
+            ? `${data.error || `STT request failed (${response.status})`} Please retry in ${Math.ceil(retryAfterSeconds)}s.`
+            : (data.error || `STT request failed (${response.status})`);
+          setSttError(message);
+          console.error('[STT Client Error]:', message);
+          if (response.status === 429) stopRecording();
+          return;
+        }
+          setSttError('');
+          if (data.transcript) {
+            const original = data.transcript;
+            // Use geminiApiKey for translation/refinement
+            const translated = await translateText(
+              original,
+              sourceLang.split('-')[0],
+              targetLangRef.current,
+              llmModelRef.current,
+              geminiApiKey
+            );
+
+            const result = { original, translated };
+            setTranscript(result);
+            if (ipcRenderer) ipcRenderer.send('send-subtitle', result);
           }
-        }
-
-        const currentText = finalTranscript || interimTranscript;
-        if (currentText) {
-          const translated = await translateText(currentText, sourceLang.split('-')[0], targetLang, llmModel);
-          const data = { original: currentText, translated };
-          setTranscript(data);
-
-          if (ipcRenderer) ipcRenderer.send('send-subtitle', data);
+        } catch (error) {
+          console.error('Audio processing failed:', error);
+          setSttError(error?.message || 'Audio processing failed');
         }
       };
-
-      recognition.onerror = (event) => {
-        console.error("Recognition error:", event.error);
-        if (event.error === 'network' && !isAuthenticated) {
-          console.warn("Network error detected, likely auth required.");
-        }
-      };
-
-      recognition.onend = () => {
-        if (isRecording) {
-          startRecognition();
-        }
-      };
-
-      recognitionRef.current = recognition;
-    }
-
-    return () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
-    };
-  }, [sourceLang, targetLang, isRecording, isAuthenticated, startRecognition]);
-
-  const toggleRecording = () => {
-    if (!recognitionRef.current) return;
-    if (isRecording) {
-      recognitionRef.current.stop();
-      setIsRecording(false);
-    } else {
-      startRecognition();
-      setIsRecording(true);
+    } catch (error) {
+      console.error('Audio processing failed:', error);
     }
   };
 
-  const handleLogin = () => {
-    if (ipcRenderer) {
-      setIsLoggingIn(true);
-      ipcRenderer.send('google-oauth');
+  const startRecording = async () => {
+    try {
+      const requiredKey = sttMode === 'cloud' ? cloudApiKey : geminiApiKey;
+      if (!requiredKey) {
+        setSttError(sttMode === 'cloud' ? 'Please enter a Google Cloud STT API key.' : 'Please enter a Gemini API key.');
+        return;
+      }
+      setSttError('');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          processAudio(event.data);
+        }
+      };
+
+      // Record in intervals of 4 seconds for better flow
+      mediaRecorder.start();
+      setIsRecording(true);
+
+      recordingIntervalRef.current = setInterval(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.stop();
+          mediaRecorderRef.current.start();
+        }
+      }, 4000);
+
+    } catch (err) {
+      console.error('Failed to start recording:', err);
+      setSttError(err?.message || 'Failed to start recording');
+      setIsRecording(false);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+    }
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+    }
+    setIsRecording(false);
+  };
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
     }
   };
 
@@ -142,7 +177,6 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-10 font-sans selection:bg-blue-500/30" suppressHydrationWarning>
       <div className="max-w-6xl mx-auto">
-        {/* Header */}
         <header className="flex items-center gap-3 mb-10">
           <div className="bg-[#2563eb] p-2 rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.4)]">
             <Languages className="w-8 h-8 text-white" />
@@ -151,17 +185,66 @@ export default function Home() {
         </header>
 
         <div className="grid grid-cols-[450px_1fr] gap-10 items-start">
-          {/* Left Column: Controls and Settings */}
           <div className="space-y-6">
-            {/* Controls Card */}
             <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-8 rounded-3xl space-y-8 shadow-xl backdrop-blur-sm relative">
               <div className="flex items-center gap-3 text-blue-400 mb-2">
                 <Monitor className="w-5 h-5" />
-                <h2 className="text-base font-bold uppercase tracking-widest">Controls</h2>
+                <h2 className="text-base font-bold uppercase tracking-widest">Configuration</h2>
               </div>
 
               <div className="space-y-6">
-                {/* Source Lang Selection */}
+                {/* STT Mode Toggle */}
+                <div className="space-y-3">
+                  <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Recognition Engine</label>
+                  <div className="flex bg-[#0f172a] p-1 rounded-xl border border-[#334155]">
+                    <button
+                      onClick={() => setSttMode('gemini')}
+                      className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${sttMode === 'gemini' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Gemini (Free)
+                    </button>
+                    <button
+                      onClick={() => setSttMode('cloud')}
+                      className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Cloud STT (Pro)
+                    </button>
+                  </div>
+                </div>
+
+                {/* Context-Sensitive API Key Input */}
+                {sttMode === 'gemini' ? (
+                  <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Gemini API Key</label>
+                    <div className="relative">
+                      <input
+                        type="password"
+                        value={geminiApiKey}
+                        onChange={(e) => setGeminiApiKey(e.target.value)}
+                        placeholder="AIzaSy... (Gemini Key)"
+                        className="w-full bg-[#0f172a] border border-[#334155] p-4 pl-12 rounded-2xl outline-none text-sm text-white focus:border-blue-500/50 transition-all font-medium"
+                      />
+                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    </div>
+                    <p className="text-[9px] text-slate-500 italic">Enter your Gemini key (supports Free Tier)</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Google Cloud API Key</label>
+                    <div className="relative">
+                      <input
+                        type="password"
+                        value={cloudApiKey}
+                        onChange={(e) => setCloudApiKey(e.target.value)}
+                        placeholder="AIzaSy... (Cloud STT Key)"
+                        className="w-full bg-[#0f172a] border border-[#334155] p-4 pl-12 rounded-2xl outline-none text-sm text-white focus:border-blue-500/50 transition-all font-medium"
+                      />
+                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    </div>
+                    <p className="text-[9px] text-slate-500 italic">Enter your Cloud STT key (requires Billing)</p>
+                  </div>
+                )}
+
                 <div className="space-y-3">
                   <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Mic Language</label>
                   <div className="relative">
@@ -180,7 +263,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Target Lang Selection */}
                 <div className="space-y-3">
                   <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Target Language</label>
                   <div className="relative">
@@ -201,23 +283,20 @@ export default function Home() {
               </div>
             </section>
 
-            {/* AI Refinement Card */}
             <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-8 rounded-3xl space-y-4 shadow-lg backdrop-blur-sm">
               <div className="flex items-center justify-between text-indigo-400">
                 <div className="flex items-center gap-3">
                   <Sparkles className="w-5 h-5" />
-                  <h2 className="text-base font-bold uppercase tracking-widest">AI Refinement</h2>
+                  <h2 className="text-base font-bold uppercase tracking-widest">AI Translation Refinement</h2>
                 </div>
-                <Settings className="w-5 h-5 text-slate-500" />
               </div>
-
               <div className="relative">
                 <select
                   value={llmModel}
                   onChange={(e) => setLlmModel(e.target.value)}
                   className="w-full bg-[#0f172a] border border-[#334155] p-3 pr-10 rounded-xl outline-none text-xs text-white appearance-none cursor-pointer focus:border-indigo-500/50 transition-all font-medium"
                 >
-                  <option value="none">No AI Refinement</option>
+                  <option value="none">Standard Translation</option>
                   <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
                   <option value="gemini-1.5-pro">Gemini 1.5 Pro (Accurate)</option>
                 </select>
@@ -225,20 +304,21 @@ export default function Home() {
               </div>
             </section>
 
-            {/* Start Microphone Button */}
             <div className="space-y-4">
               <button
                 onClick={toggleRecording}
                 className={`w-full py-6 rounded-3xl flex items-center justify-center gap-4 font-bold text-xl transition-all duration-300 transform active:scale-[0.98] ${isRecording
-                  ? 'bg-red-500 text-white shadow-[0_0_30px_rgba(239,68,68,0.3)] animate-pulse'
+                  ? 'bg-red-500 text-white shadow-[0_0_30px_rgba(239,68,68,0.3)]'
                   : 'bg-[#2563eb] text-white shadow-[0_8px_30px_rgba(37,99,235,0.4)] hover:bg-blue-600'
                   }`}
               >
-                {isRecording ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-                {isRecording ? 'Stop Transcript' : 'Start Microphone'}
+                {isRecording ? <MicOff className="w-6 h-6 animate-pulse" /> : <Mic className="w-6 h-6" />}
+                {isRecording ? 'Stop Live STT' : 'Start Live STT'}
               </button>
+              {sttError ? (
+                <p className="text-xs text-red-400 font-medium px-1">{sttError}</p>
+              ) : null}
 
-              {/* Status / Overlay Button */}
               <button
                 onClick={toggleOverlay}
                 className={`w-full flex items-center justify-between px-6 py-4 rounded-2xl border transition-all duration-300 font-bold text-xs uppercase tracking-[0.1em] ${overlayVisible
@@ -251,43 +331,14 @@ export default function Home() {
               </button>
             </div>
 
-            {/* Auth Alert / Login Button */}
-            {!isAuthenticated && (
-              <div className="p-6 bg-[#2563eb]/10 border border-[#2563eb]/20 rounded-3xl space-y-4 shadow-[0_0_40px_rgba(37,99,235,0.1)]">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] text-blue-400 uppercase font-black tracking-widest">Stability Boost Required</p>
-                  <Sparkles className="w-3 h-3 text-blue-400 animate-pulse" />
-                </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed italic">
-                  To prevent "Network Error -2", please authorize this session in your system browser.
-                </p>
-                <button
-                  onClick={handleLogin}
-                  disabled={isLoggingIn}
-                  className={`w-full flex items-center justify-between bg-[#2563eb] text-white px-6 py-4 rounded-2xl font-bold transition-all shadow-xl hover:bg-blue-600 active:scale-95 group ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <div className="flex items-center gap-3">
-                    {isLoggingIn ? (
-                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                    ) : (
-                      <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5 brightness-200" />
-                    )}
-                    <span>{isLoggingIn ? 'Check Your Browser...' : 'Browser OAuth Login'}</span>
-                  </div>
-                  <ExternalLink className="w-4 h-4 group-hover:translate-x-1 group-hover:-translate-y-1 transition-transform" />
-                </button>
-              </div>
-            )}
-
             <div className="p-6 bg-[#1e293b]/20 border border-[#334155]/30 rounded-3xl">
-              <p className="text-[11px] text-slate-500 font-medium leading-relaxed italic">
+              <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
                 <Sparkles className="w-3 h-3 inline mr-2 text-indigo-400/60" />
-                The transparent overlay will stay on top of your full-screen PowerPoint. Ensure you use Chrome or Edge for the microphone to work.
+                Using Google Cloud Speech-to-Text API for maximum stability and accuracy. No more browser bypass hacks required.
               </p>
             </div>
           </div>
 
-          {/* Right Column: Live Feedback */}
           <section className="bg-[#1e293b]/20 border border-[#334155]/20 rounded-[2.5rem] p-12 flex flex-col min-h-[600px] shadow-2xl relative overflow-hidden group">
             <div className="absolute top-0 right-0 p-12 opacity-[0.03] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
               <Languages className="w-48 h-48" />
@@ -298,17 +349,15 @@ export default function Home() {
             </h2>
 
             <div className="space-y-12 flex-1">
-              {/* Original Text Section */}
               <div className="space-y-4">
-                <span className="text-[10px] text-slate-500 uppercase font-black tracking-[0.2em] block">Original</span>
+                <span className="text-[10px] text-slate-500 uppercase font-black tracking-[0.2em] block">Original (Recognized)</span>
                 <p className={`text-2xl font-medium leading-relaxed transition-all duration-500 ${transcript.original ? 'text-slate-200' : 'text-slate-600 italic'}`}>
-                  {transcript.original || "Speak to see transcription..."}
+                  {transcript.original || (isRecording ? "Listening..." : "Click Start to begin...")}
                 </p>
               </div>
 
               <div className="h-px bg-[#334155]/30 w-full" />
 
-              {/* Translated Text Section */}
               <div className="space-y-4">
                 <span className="text-[10px] text-indigo-500/80 uppercase font-black tracking-[0.2em] block">Translated</span>
                 <p className={`text-4xl font-bold leading-tight tracking-tight transition-all duration-700 ${transcript.translated ? 'text-white' : 'text-slate-800'}`}>
@@ -317,15 +366,14 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Visual Equalizer / Active Indicator */}
             {isRecording && hasMounted && (
               <div className="mt-auto flex gap-1 items-end h-8 overflow-hidden opacity-50">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6].map((i, idx) => (
+                {[...Array(16)].map((_, idx) => (
                   <div
                     key={idx}
                     className="w-1 bg-blue-500/50 rounded-full animate-wave"
                     style={{
-                      height: `${Math.random() * 100}%`,
+                      height: `${20 + Math.random() * 80}%`,
                       animationDelay: `${idx * 0.05}s`,
                       animationDuration: `${0.5 + Math.random()}s`
                     }}
@@ -336,8 +384,6 @@ export default function Home() {
           </section>
         </div>
       </div>
-
-
     </main>
   );
 }
