@@ -4,6 +4,13 @@ const path = require('path');
 let overlayWindow;
 let mainWindow;
 
+function broadcastOverlayStatus() {
+  const visible = overlayWindow ? overlayWindow.isVisible() : false;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('overlay-status', visible);
+  }
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1000,
@@ -26,7 +33,8 @@ function createOverlayWindow() {
     frame: false,
     alwaysOnTop: true,
     hasShadow: false,
-    focusable: true,
+    // Keep the main window usable while overlay is shown.
+    focusable: false,
     resizable: true,
     show: false,
     type: 'panel',
@@ -40,6 +48,7 @@ function createOverlayWindow() {
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWindow.setAlwaysOnTop(true, 'screen-saver', 1);
   overlayWindow.setFullScreenable(false);
+  overlayWindow.setIgnoreMouseEvents(true, { forward: true });
 
   const { screen } = require('electron');
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -64,6 +73,7 @@ ipcMain.on('toggle-overlay', (event) => {
     else overlayWindow.show();
   }
   event.reply('overlay-status', overlayWindow.isVisible());
+  broadcastOverlayStatus();
 });
 
 ipcMain.on('get-overlay-status', (event) => {
@@ -72,6 +82,7 @@ ipcMain.on('get-overlay-status', (event) => {
 
 ipcMain.on('close-overlay', () => {
   if (overlayWindow) overlayWindow.hide();
+  broadcastOverlayStatus();
 });
 
 ipcMain.on('resize-overlay', (event, { width, height }) => {
