@@ -4,7 +4,7 @@ import { geminiTranslate, geminiRefine } from '@/lib/gemini';
 export async function POST(request) {
     try {
         const body = await request.json();
-        const { text, from, to, llmModel } = body;
+        const { text, from, to, llmModel, apiKey } = body;
 
         if (!text) {
             return new Response(JSON.stringify({ error: "Text is required" }), { status: 400 });
@@ -15,7 +15,7 @@ export async function POST(request) {
         // Use Gemini for Chinese translation if it fails or if specifically requested
         if (to === 'zh' || to.startsWith('zh-')) {
             console.log("[API] Using Gemini for Chinese translation...");
-            resultText = await geminiTranslate(text, from, to, llmModel || 'gemini-1.5-flash');
+            resultText = await geminiTranslate(text, from, to, llmModel || 'gemini-1.5-flash', apiKey);
         }
 
         // If not Chinese or if Gemini failed, use the default translator
@@ -31,7 +31,7 @@ export async function POST(request) {
         // Apply LLM refinement if a model is selected and it's not already handled by Gemini translation refinedly
         if (llmModel && llmModel !== 'none') {
             console.log(`[API] Applying Gemini refinement with model: ${llmModel}`);
-            resultText = await geminiRefine(text, resultText, from, to, llmModel);
+            resultText = await geminiRefine(text, resultText, from, to, llmModel, apiKey);
         }
 
         return new Response(JSON.stringify({ text: resultText }), {
