@@ -90,7 +90,14 @@ ipcMain.on('resize-overlay', (event, { width, height }) => {
 });
 
 ipcMain.on('set-ignore-mouse', (event, ignore) => {
-  if (overlayWindow) overlayWindow.setIgnoreMouseEvents(ignore, { forward: true });
+  if (overlayWindow) {
+    overlayWindow.setIgnoreMouseEvents(ignore, { forward: true });
+    // Broadcast status to both windows
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('overlay-lock-status', ignore);
+    }
+    overlayWindow.webContents.send('overlay-lock-status', ignore);
+  }
 });
 
 ipcMain.on('send-subtitle', (event, data) => {

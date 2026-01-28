@@ -16,8 +16,12 @@ export default function Home() {
   const [hasMounted, setHasMounted] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [cloudApiKey, setCloudApiKey] = useState('');
-  const [sttMode, setSttMode] = useState('gemini'); // 'gemini' or 'cloud'
+  const [sttMode, setSttMode] = useState('cloud'); // 'gemini' or 'cloud'
   const [sttError, setSttError] = useState('');
+  const [showUsageModal, setShowUsageModal] = useState(false);
+  const [usageStats, setUsageStats] = useState(null);
+  const [isLoadingUsage, setIsLoadingUsage] = useState(false);
+  const [isOverlayLocked, setIsOverlayLocked] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -33,6 +37,18 @@ export default function Home() {
     const savedCloud = localStorage.getItem('google_cloud_stt_api_key');
     if (savedGemini) setGeminiApiKey(savedGemini);
     if (savedCloud) setCloudApiKey(savedCloud);
+
+    // Listen for overlay status sync
+    if (ipcRenderer) {
+      ipcRenderer.on('overlay-status', (event, visible) => {
+        setOverlayVisible(visible);
+      });
+      ipcRenderer.on('overlay-lock-status', (event, locked) => {
+        setIsOverlayLocked(locked);
+      });
+      // Initial status check
+      ipcRenderer.send('get-overlay-status');
+    }
   }, []);
 
   useEffect(() => {
@@ -78,17 +94,17 @@ export default function Home() {
             })
           });
 
-        const data = await response.json();
-        if (!response.ok || data.error) {
-          const retryAfterSeconds = typeof data.retryAfterSeconds === 'number' ? data.retryAfterSeconds : null;
-          const message = retryAfterSeconds != null
-            ? `${data.error || `STT request failed (${response.status})`} Please retry in ${Math.ceil(retryAfterSeconds)}s.`
-            : (data.error || `STT request failed (${response.status})`);
-          setSttError(message);
-          console.error('[STT Client Error]:', message);
-          if (response.status === 429) stopRecording();
-          return;
-        }
+          const data = await response.json();
+          if (!response.ok || data.error) {
+            const retryAfterSeconds = typeof data.retryAfterSeconds === 'number' ? data.retryAfterSeconds : null;
+            const message = retryAfterSeconds != null
+              ? `${data.error || `STT request failed (${response.status})`} Please retry in ${Math.ceil(retryAfterSeconds)}s.`
+              : (data.error || `STT request failed (${response.status})`);
+            setSttError(message);
+            console.error('[STT Client Error]:', message);
+            if (response.status === 429) stopRecording();
+            return;
+          }
           setSttError('');
           if (data.transcript) {
             const original = data.transcript;
@@ -174,6 +190,26 @@ export default function Home() {
     if (ipcRenderer) ipcRenderer.send('toggle-overlay');
   };
 
+  const fetchUsageStats = async () => {
+    setIsLoadingUsage(true);
+    try {
+      const response = await fetch('/api/usage');
+      const data = await response.json();
+      setUsageStats(data);
+    } catch (error) {
+      console.error('Failed to fetch usage stats:', error);
+    } finally {
+      setIsLoadingUsage(false);
+    }
+  };
+
+  const formatDuration = (seconds) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
   return (
     <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-10 font-sans selection:bg-blue-500/30" suppressHydrationWarning>
       <div className="max-w-6xl mx-auto">
@@ -198,16 +234,17 @@ export default function Home() {
                   <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Recognition Engine</label>
                   <div className="flex bg-[#0f172a] p-1 rounded-xl border border-[#334155]">
                     <button
-                      onClick={() => setSttMode('gemini')}
-                      className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${sttMode === 'gemini' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
-                    >
-                      Gemini (Free)
-                    </button>
-                    <button
                       onClick={() => setSttMode('cloud')}
                       className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
                     >
                       Cloud STT (Pro)
+                    </button>
+                    <button
+                      disabled
+                      className="flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all bg-slate-800 text-slate-500 cursor-not-allowed opacity-50"
+                      title="Gemini STT temporarily unavailable"
+                    >
+                      Gemini (Free)
                     </button>
                   </div>
                 </div>
@@ -279,6 +316,18 @@ export default function Home() {
                     </select>
                     <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                   </div>
+                  <div className="pt-2">
+                    <button
+                      onClick={() => {
+                        fetchUsageStats();
+                        setShowUsageModal(true);
+                      }}
+                      className="w-full py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-blue-400 hover:border-blue-500/50 transition-all text-xs font-bold flex items-center justify-center gap-2"
+                    >
+                      <Monitor className="w-3.5 h-3.5" />
+                      View Daily Usage Stats
+                    </button>
+                  </div>
                 </div>
               </div>
             </section>
@@ -326,9 +375,30 @@ export default function Home() {
                   : 'bg-slate-800/40 border-slate-700/50 text-slate-500 hover:border-slate-500'
                   }`}
               >
-                <span>{overlayVisible ? 'Close Presenter Overlay' : 'Open Presenter Overlay'}</span>
+                <span>{overlayVisible ? 'Hide Presenter Overlay' : 'Open Presenter Overlay'}</span>
                 <div className={`w-2 h-2 rounded-full ${overlayVisible ? 'bg-blue-400 animate-pulse' : 'bg-slate-700'}`}></div>
               </button>
+
+              {overlayVisible && (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <button
+                    onClick={() => {
+                      if (ipcRenderer) ipcRenderer.send('set-ignore-mouse', !isOverlayLocked);
+                    }}
+                    className={`py-2.5 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all border ${isOverlayLocked ? 'bg-blue-600 border-blue-500 text-white shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'}`}
+                  >
+                    {isOverlayLocked ? 'Unlock Overlay' : 'Lock Overlay'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (ipcRenderer) ipcRenderer.send('close-overlay');
+                    }}
+                    className="py-2.5 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all bg-slate-800 border border-slate-700 text-red-400 hover:bg-red-500/10 hover:border-red-500/50"
+                  >
+                    Close Overlay
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="p-6 bg-[#1e293b]/20 border border-[#334155]/30 rounded-3xl">
@@ -384,6 +454,95 @@ export default function Home() {
           </section>
         </div>
       </div>
+
+      {/* Usage Modal */}
+      {showUsageModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#1e293b] border border-[#334155] rounded-[2rem] w-full max-w-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-8 border-b border-[#334155] flex items-center justify-between bg-[#0f172a]/50">
+              <div className="flex items-center gap-3">
+                <div className="bg-blue-600/20 p-2 rounded-lg">
+                  <Monitor className="w-5 h-5 text-blue-400" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-white">Daily STT Usage</h3>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Today: {usageStats?.date || '...'}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowUsageModal(false)}
+                className="p-2 hover:bg-slate-700 rounded-full transition-colors"
+              >
+                <div className="w-5 h-5 flex items-center justify-center text-slate-400">✕</div>
+              </button>
+            </div>
+
+            <div className="p-8">
+              {isLoadingUsage ? (
+                <div className="flex flex-col items-center justify-center py-20 space-y-4">
+                  <div className="w-8 h-8 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
+                  <p className="text-sm font-medium">Loading statistics...</p>
+                </div>
+              ) : usageStats && Object.keys(usageStats.usage).length > 0 ? (
+                <div className="space-y-6">
+                  <div className="overflow-hidden rounded-2xl border border-[#334155] bg-[#0f172a]/30">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-[#0f172a]/50">
+                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">API Key (Masked)</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">Usage</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">Progress</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(usageStats.usage).map(([key, seconds], idx) => {
+                          const percent = Math.min(100, (seconds / usageStats.limit) * 100);
+                          return (
+                            <tr key={idx} className="border-b border-[#334155]/50 last:border-0 hover:bg-white/5 transition-colors">
+                              <td className="px-6 py-5">
+                                <code className="text-blue-400 text-xs font-mono">{key}</code>
+                              </td>
+                              <td className="px-6 py-5">
+                                <span className="text-white font-bold">{formatDuration(seconds)}</span>
+                                <span className="text-slate-500 text-[10px] ml-1">/ {usageStats.limit / 3600}h</span>
+                              </td>
+                              <td className="px-6 py-5">
+                                <div className="w-32 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-1000 ${percent > 90 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : percent > 50 ? 'bg-amber-500' : 'bg-blue-500'}`}
+                                    style={{ width: `${percent}%` }}
+                                  ></div>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-relaxed text-center italic">
+                    Note: Usage is reset daily at 00:00 (server time). Limits are applied per API Key.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-20 bg-[#0f172a]/20 rounded-2xl border border-dashed border-[#334155]">
+                  <Monitor className="w-12 h-12 text-slate-700 mb-4" />
+                  <p className="text-slate-400 font-medium">No usage recorded for today yet.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="p-8 bg-[#0f172a]/30 border-t border-[#334155] flex justify-end">
+              <button
+                onClick={() => setShowUsageModal(false)}
+                className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold text-xs transition-all border border-[#334155]"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
