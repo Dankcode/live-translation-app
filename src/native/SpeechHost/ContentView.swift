@@ -2,7 +2,7 @@ import SwiftUI
 import Speech
 import AVFoundation
 
-class SpeechManager: NSObject, ObservableObject {
+class SpeechManager: NSObject {
     private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -45,6 +45,7 @@ class SpeechManager: NSObject, ObservableObject {
         audioEngine.prepare()
         try? audioEngine.start()
         print("Diagnostic: Speech Host Started")
+        fflush(stdout)
     }
     
     func stop() {
@@ -72,8 +73,7 @@ class SpeechManager: NSObject, ObservableObject {
     }
 }
 
-@main
-struct SpeechHostApp: App {
+struct ContentView: View {
     let manager = SpeechManager()
     
     init() {
@@ -83,15 +83,13 @@ struct SpeechHostApp: App {
         manager.start(locale: locale)
     }
     
-    var body: some Scene {
-        WindowGroup {
-            VStack {
-                Text("Scribe Center Speech Host")
-                    .font(.headline)
-                Text("This window can be minimized.")
-                    .font(.subheadline)
-            }
-            .frame(width: 300, height: 200)
+    var body: some View {
+        VStack {
+            Text("Scribe Center Speech Host")
+                .font(.headline)
+            Text("This window can be minimized.")
+                .font(.subheadline)
         }
+        .frame(width: 300, height: 200)
     }
 }
