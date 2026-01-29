@@ -29,6 +29,7 @@ export default function Home() {
   const targetLangRef = useRef(targetLang);
   const llmModelRef = useRef(llmModel);
   const recordingIntervalRef = useRef(null);
+  const recognitionRef = useRef(null);
 
   useEffect(() => {
     setHasMounted(true);
@@ -67,6 +68,27 @@ export default function Home() {
     if (ipcRenderer) {
       ipcRenderer.on('overlay-status', (event, status) => {
         setOverlayVisible(status);
+      });
+      ipcRenderer.on('mac-stt-transcript', async (event, data) => {
+        const original = data.transcript;
+        if (original) {
+          const translated = await translateText(
+            original,
+            sourceLang.split('-')[0],
+            targetLangRef.current,
+            llmModelRef.current,
+            geminiApiKey
+          );
+
+          const result = { original, translated };
+          setTranscript(result);
+          if (ipcRenderer) ipcRenderer.send('send-subtitle', result);
+        }
+      });
+      ipcRenderer.on('mac-stt-error', (event, error) => {
+        console.error('macOS STT error:', error);
+        setSttError(`macOS STT error: ${error}`);
+        stopRecording();
       });
       ipcRenderer.send('get-overlay-status');
     }
@@ -133,6 +155,12 @@ export default function Home() {
 
   const startRecording = async () => {
     try {
+      if (sttMode === 'apple') {
+        setSttError('');
+        startNativeSpeechRecognition();
+        return;
+      }
+
       const requiredKey = sttMode === 'cloud' ? cloudApiKey : geminiApiKey;
       if (!requiredKey) {
         setSttError(sttMode === 'cloud' ? 'Please enter a Google Cloud STT API key.' : 'Please enter a Gemini API key.');
@@ -168,6 +196,10 @@ export default function Home() {
   };
 
   const stopRecording = () => {
+    if (sttMode === 'apple') {
+      stopNativeSpeechRecognition();
+    }
+
     if (mediaRecorderRef.current) {
       mediaRecorderRef.current.stop();
       mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
@@ -176,6 +208,81 @@ export default function Home() {
       clearInterval(recordingIntervalRef.current);
     }
     setIsRecording(false);
+  };
+
+  const startNativeSpeechRecognition = () => {
+    if (ipcRenderer) {
+      // In Electron, use our native bridge
+      ipcRenderer.send('start-mac-stt', { locale: sourceLang });
+      setIsRecording(true);
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setSttError('Native Speech Recognition is not supported in this browser.');
+      setIsRecording(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = sourceLang;
+
+    recognition.onresult = async (event) => {
+      const last = event.results.length - 1;
+      const original = event.results[last][0].transcript;
+
+      if (original) {
+        const translated = await translateText(
+          original,
+          sourceLang.split('-')[0],
+          targetLangRef.current,
+          llmModelRef.current,
+          geminiApiKey
+        );
+
+        const result = { original, translated };
+        setTranscript(result);
+        if (ipcRenderer) ipcRenderer.send('send-subtitle', result);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error('Speech recognition error:', event.error);
+      if (event.error !== 'no-speech') {
+        setSttError(`Recognition error: ${event.error}`);
+        stopRecording();
+      }
+    };
+
+    recognition.onend = () => {
+      // Restart if still recording and in apple mode
+      if (isRecordingRef.current && sttMode === 'apple') {
+        try {
+          recognition.start();
+        } catch (e) {
+          console.error('Failed to restart recognition:', e);
+        }
+      }
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsRecording(true);
+  };
+
+  const stopNativeSpeechRecognition = () => {
+    if (ipcRenderer) {
+      ipcRenderer.send('stop-mac-stt');
+      setIsRecording(false);
+    }
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null; // Prevent restart
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
   };
 
   const toggleRecording = () => {
@@ -235,16 +342,22 @@ export default function Home() {
                   <div className="flex bg-[#0f172a] p-1 rounded-xl border border-[#334155]">
                     <button
                       onClick={() => setSttMode('cloud')}
-                      className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                      className={`flex-1 py-2 px-3 rounded-l-lg text-[10px] font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
                     >
-                      Cloud STT (Pro)
+                      Cloud STT
+                    </button>
+                    <button
+                      onClick={() => setSttMode('apple')}
+                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Apple Native
                     </button>
                     <button
                       disabled
-                      className="flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all bg-slate-800 text-slate-500 cursor-not-allowed opacity-50"
+                      className="flex-1 py-2 px-3 rounded-r-lg text-[10px] font-bold transition-all bg-slate-800 text-slate-500 cursor-not-allowed opacity-50"
                       title="Gemini STT temporarily unavailable"
                     >
-                      Gemini (Free)
+                      Gemini
                     </button>
                   </div>
                 </div>
@@ -265,7 +378,7 @@ export default function Home() {
                     </div>
                     <p className="text-[9px] text-slate-500 italic">Enter your Gemini key (supports Free Tier)</p>
                   </div>
-                ) : (
+                ) : sttMode === 'cloud' ? (
                   <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
                     <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Google Cloud API Key</label>
                     <div className="relative">
@@ -280,7 +393,16 @@ export default function Home() {
                     </div>
                     <p className="text-[9px] text-slate-500 italic">Enter your Cloud STT key (requires Billing)</p>
                   </div>
-                )}
+                ) : sttMode === 'apple' ? (
+                  <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Apple Native STT</label>
+                    <div className="p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-2xl">
+                      <p className="text-xs text-indigo-300 leading-relaxed font-medium">
+                        Using system-native speech recognition. No API key required, but performance depends on browser support (Safari/Chrome).
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="space-y-3">
                   <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Mic Language</label>
