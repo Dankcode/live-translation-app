@@ -1,8 +1,30 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
+const { spawn, execSync } = require('child_process');
+const fs = require('fs');
 
 let overlayWindow;
 let mainWindow;
+let macSttProcess = null;
+
+const MAC_STT_APP_BIN = path.join(app.getAppPath(), 'bin/SpeechHost.app/Contents/MacOS/SpeechHost');
+
+function checkMacSttBinary() {
+  if (process.platform !== 'darwin') return false;
+  return fs.existsSync(MAC_STT_APP_BIN);
+}
+
+async function requestPermissions() {
+  if (process.platform === 'darwin') {
+    const { systemPreferences } = require('electron');
+    try {
+      const micAccess = await systemPreferences.askForMediaAccess('microphone');
+      console.log('Microphone access:', micAccess);
+    } catch (e) {
+      console.error('Failed to request microphone access:', e);
+    }
+  }
+}
 
 function broadcastOverlayStatus() {
   const visible = overlayWindow ? overlayWindow.isVisible() : false;
@@ -59,9 +81,11 @@ function createOverlayWindow() {
   overlayWindow.loadURL(url);
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   createMainWindow();
   createOverlayWindow();
+  await requestPermissions();
+  // We no longer pre-compile here as Xcode handles it
 });
 
 ipcMain.on('toggle-overlay', (event) => {
@@ -106,6 +130,62 @@ ipcMain.on('send-subtitle', (event, data) => {
 
 ipcMain.on('open-external-browser', (event, url) => {
   shell.openExternal(url);
+});
+
+ipcMain.on('start-mac-stt', async (event, { locale }) => {
+  if (process.platform !== 'darwin') {
+    event.reply('mac-stt-error', 'Native STT is only supported on macOS.');
+    return;
+  }
+
+  if (!checkMacSttBinary()) {
+    event.reply('mac-stt-error', 'SpeechHost.app not found in bin/ directory. Please build it in Xcode first.');
+    return;
+  }
+
+  if (macSttProcess) {
+    macSttProcess.kill();
+  }
+
+  console.log(`Starting Native Host STT with locale: ${locale}`);
+  macSttProcess = spawn(MAC_STT_APP_BIN, [locale]);
+
+  macSttProcess.stdout.on('data', (data) => {
+    const lines = data.toString().split('\n');
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const json = JSON.parse(line);
+        if (json.error) {
+          mainWindow.webContents.send('mac-stt-error', json.error);
+        } else if (json.transcript) {
+          mainWindow.webContents.send('mac-stt-transcript', json);
+        }
+      } catch (e) {
+        console.error('Failed to parse Swift output:', line);
+      }
+    }
+  });
+
+  macSttProcess.stderr.on('data', (data) => {
+    console.error(`macOS STT stderr: ${data}`);
+  });
+
+  macSttProcess.on('close', (code) => {
+    console.log(`macOS STT process exited with code ${code}`);
+    macSttProcess = null;
+  });
+});
+
+ipcMain.on('stop-mac-stt', () => {
+  if (macSttProcess) {
+    macSttProcess.kill();
+    macSttProcess = null;
+  }
+});
+
+app.on('will-quit', () => {
+  if (macSttProcess) macSttProcess.kill();
 });
 
 app.on('window-all-closed', () => {
