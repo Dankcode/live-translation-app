@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Satellite STT Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .wave {
+            animation: wave 1.2s infinite ease-in-out;
+        }
+
+        @keyframes wave {
+
+            0%,
+            100% {
+                transform: scaleY(0.5);
+            }
+
+            50% {
+                transform: scaleY(1.5);
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-[#0a0f1c] text-slate-300 font-sans min-h-screen flex items-center justify-center p-6">
+    <div class="max-w-md w-full bg-[#1e293b] border border-[#334155] rounded-3xl p-8 shadow-2xl text-center">
+        <div id="status-icon"
+            class="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-6 transition-all duration-500">
+            <div id="mic-icon" class="text-slate-500">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" x2="12" y1="19" y2="22" />
+                </svg>
+            </div>
+        </div>
+
+        <h1 class="text-white text-xl font-bold mb-2">Satellite Engine</h1>
+        <p id="status-text" class="text-sm text-slate-500 mb-8 uppercase tracking-widest font-black">Idle - Waiting for
+            Command</p>
+
+        <!-- Visualizer -->
+        <div id="visualizer" class="flex items-center justify-center gap-1 h-8 mb-8 hidden">
+            <div class="w-1 h-4 bg-blue-500 rounded-full wave" style="animation-delay: 0.0s"></div>
+            <div class="w-1 h-6 bg-blue-400 rounded-full wave" style="animation-delay: 0.1s"></div>
+            <div class="w-1 h-8 bg-blue-300 rounded-full wave" style="animation-delay: 0.2s"></div>
+            <div class="w-1 h-6 bg-blue-400 rounded-full wave" style="animation-delay: 0.3s"></div>
+            <div class="w-1 h-4 bg-blue-500 rounded-full wave" style="animation-delay: 0.4s"></div>
+        </div>
+
+        <div class="bg-[#0f172a] rounded-2xl p-4 text-left border border-[#334155]">
+            <span class="text-[10px] text-indigo-400 font-bold uppercase tracking-tighter">Live Debug Feed</span>
+            <div id="debug-log" class="text-[11px] font-mono mt-2 h-32 overflow-y-auto text-slate-400 space-y-1">
+                <div>> Engine initialized...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Check for IPC availability (Electron context)
+        const ipc = (window.require) ? window.require('electron').ipcRenderer : null;
+
+        let recognition = null;
+        let isActive = false;
+        let currentConfig = {};
+
+        const statusText = document.getElementById('status-text');
+        const statusIcon = document.getElementById('status-icon');
+        const debugLog = document.getElementById('debug-log');
+        const visualizer = document.getElementById('visualizer');
+
+        function log(msg) {
+            const div = document.createElement('div');
+            div.textContent = `> ${msg}`;
+            debugLog.appendChild(div);
+            debugLog.scrollTop = debugLog.scrollHeight;
+        }
+
+        // Initialize Speech Recognition
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+
+            recognition.onstart = () => {
+                log("Microphone access granted. Listening...");
+                statusText.innerText = "Listening...";
+                statusText.classList.replace('text-slate-500', 'text-blue-400');
+                statusIcon.classList.replace('bg-slate-800', 'bg-blue-600/20');
+                visualizer.classList.remove('hidden');
+            };
+
+            recognition.onresult = (event) => {
+                let interimTranscript = '';
+                let finalTranscript = '';
+
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        interimTranscript += event.results[i][0].transcript;
+                    }
+                }
+
+                const text = finalTranscript || interimTranscript;
+                if (text) {
+                    log(`Detected: ${text.substring(0, 30)}...`);
+
+                    // Send data back to Electron Main Process
+                    if (ipc) {
+                        ipc.send('satellite-transcript-data', {
+                            transcript: text,
+                            isFinal: finalTranscript !== ''
+                        });
+                    }
+                }
+            };
+
+            recognition.onerror = (event) => {
+                log(`Error: ${event.error}`);
+                if (event.error === 'not-allowed') {
+                    statusText.innerText = "Mic Blocked";
+                    statusText.classList.add('text-red-400');
+                }
+            };
+
+            recognition.onend = () => {
+                if (isActive) {
+                    log("Restarting stream...");
+                    recognition.start();
+                } else {
+                    log("Stream ended.");
+                    statusText.innerText = "Idle";
+                    statusIcon.classList.replace('bg-blue-600/20', 'bg-slate-800');
+                    visualizer.classList.add('hidden');
+                }
+            };
+        } else {
+            log("Error: Web Speech API not supported in this browser.");
+            statusText.innerText = "Not Supported";
+        }
+
+        // Listen for Electron commands
+        if (ipc) {
+            ipc.on('start-stt', (event, config) => {
+                currentConfig = config;
+                isActive = true;
+                recognition.lang = config.sourceLang || 'en-US';
+                log(`Command: Start (Lang: ${recognition.lang})`);
+                try {
+                    recognition.start();
+                } catch (e) { log("Already running"); }
+            });
+
+            ipc.on('stop-stt', () => {
+                isActive = false;
+                log("Command: Stop");
+                recognition.stop();
+            });
+        } else {
+            log("Running in standalone browser mode.");
+            // In standalone mode, let's allow manual start for testing
+            statusIcon.onclick = () => {
+                if (!isActive) {
+                    isActive = true;
+                    recognition.start();
+                } else {
+                    isActive = false;
+                    recognition.stop();
+                }
+            };
+        }
+    </script>
+</body>
+
+</html>
