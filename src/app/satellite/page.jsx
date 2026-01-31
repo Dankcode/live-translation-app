@@ -24,6 +24,32 @@ export default function SatellitePage() {
         setLogs(prev => [...prev.slice(-20), msg]); // Keep last 20 logs
     };
 
+    const wsRef = useRef(null);
+
+    useEffect(() => {
+        if (!ipc) {
+            const socket = new WebSocket('ws://localhost:8080');
+            wsRef.current = socket;
+
+            socket.onopen = () => {
+                addLog("Connected to Electron Host via WebSocket.");
+                setStatus("Connected - Ready");
+                // Immediately start recognition in browser mode for simplicity
+                window._shouldBeActive = true;
+                if (recognitionRef.current) {
+                    try { recognitionRef.current.start(); } catch (e) { }
+                }
+            };
+
+            socket.onclose = () => {
+                addLog("Disconnected from Electron Host.");
+                setStatus("Disconnected");
+            };
+
+            return () => socket.close();
+        }
+    }, [ipc]);
+
     useEffect(() => {
         // Initialize Speech Recognition
         const SpeechRecognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -65,6 +91,12 @@ export default function SatellitePage() {
                             isFinal: finalTranscript !== '',
                             timestamp: Date.now()
                         });
+                    } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                        wsRef.current.send(JSON.stringify({
+                            transcript: text,
+                            isFinal: finalTranscript !== '',
+                            timestamp: Date.now()
+                        }));
                     }
                 }
             };

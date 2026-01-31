@@ -2,42 +2,60 @@ const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
-ipcMain.on('open-external-link', (event, url) => {
-  shell.openExternal(url);
-});
+const { WebSocketServer } = require('ws');
+
 let overlayWindow;
 let mainWindow;
-let satelliteWindow; // Reference for the new window
 let macSttProcess = null;
+let wss = null;
 
 const MAC_STT_APP_BIN = path.join(app.getAppPath(), 'bin/SpeechHost.app/Contents/MacOS/SpeechHost');
 
 /**
- * Checks if the native macOS STT binary exists.
+ * Initializes the WebSocket server for Satellite STT.
  */
+function startWebSocketServer() {
+  wss = new WebSocketServer({ port: 8080 });
+  console.log('Satellite WebSocket Server started on port 8080');
+
+  wss.on('connection', (ws) => {
+    console.log('Satellite Browser connected');
+
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message);
+        // Forward the transcription to the main window
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('satellite-transcript', data);
+        }
+      } catch (e) {
+        console.error('Failed to parse WebSocket message:', e);
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('Satellite Browser disconnected');
+    });
+  });
+}
+
 function checkMacSttBinary() {
   if (process.platform !== 'darwin') return false;
   return fs.existsSync(MAC_STT_APP_BIN);
 }
 
-/**
- * Requests microphone permissions on macOS.
- */
 async function requestPermissions() {
   if (process.platform === 'darwin') {
     const { systemPreferences } = require('electron');
     try {
       const micAccess = await systemPreferences.askForMediaAccess('microphone');
-      console.log('Microphone access granted:', micAccess);
+      console.log('Microphone access:', micAccess);
     } catch (e) {
       console.error('Failed to request microphone access:', e);
     }
   }
 }
 
-/**
- * Broadcasts the overlay visibility status to the main window.
- */
 function broadcastOverlayStatus() {
   const visible = overlayWindow ? overlayWindow.isVisible() : false;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -45,9 +63,6 @@ function broadcastOverlayStatus() {
   }
 }
 
-/**
- * Creates the main application window.
- */
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1000,
@@ -58,58 +73,10 @@ function createMainWindow() {
     },
   });
 
-  const url = 'http://localhost:3000';
+  const url = app.isPackaged ? 'http://localhost:3000' : 'http://localhost:3000';
   mainWindow.loadURL(url);
 }
 
-/**
- * Creates the satellite window to run the specific satellite script.
- */
-function createSatelliteWindow() {
-  if (satelliteWindow) {
-    satelliteWindow.focus();
-    return;
-  }
-
-  satelliteWindow = new BrowserWindow({
-    width: 600,
-    height: 400,
-    title: "Satellite Renderer",
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  // Using app.getAppPath() for more reliable path resolution relative to app root
-  const satellitePath = path.join(app.getAppPath(), './src/app/satellite', 'ipcrenderer.js');
-  const indexPath = path.join(app.getAppPath(), './src/app/satellite', 'index.html');
-
-  satelliteWindow.loadFile(indexPath).catch(() => {
-    // Fallback: If no HTML exists, we can inject the script into a blank page
-    satelliteWindow.loadURL('about:blank');
-    satelliteWindow.webContents.on('did-finish-load', () => {
-      try {
-        if (fs.existsSync(satellitePath)) {
-          const content = fs.readFileSync(satellitePath, 'utf8');
-          satelliteWindow.webContents.executeJavaScript(content);
-        } else {
-          console.error('Satellite script not found at:', satellitePath);
-        }
-      } catch (err) {
-        console.error('Failed to read or execute satellite script:', err);
-      }
-    });
-  });
-
-  satelliteWindow.on('closed', () => {
-    satelliteWindow = null;
-  });
-}
-
-/**
- * Creates the transparent overlay window for displaying subtitles.
- */
 function createOverlayWindow() {
   overlayWindow = new BrowserWindow({
     width: 1200,
@@ -118,6 +85,7 @@ function createOverlayWindow() {
     frame: false,
     alwaysOnTop: true,
     hasShadow: false,
+    // Keep the main window usable while overlay is shown.
     focusable: false,
     resizable: true,
     show: false,
@@ -144,32 +112,16 @@ function createOverlayWindow() {
 }
 
 app.whenReady().then(async () => {
-  try {
-    createMainWindow();
-    createOverlayWindow();
-    await requestPermissions();
-  } catch (err) {
-    console.error('Error during app startup:', err);
-  }
+  createMainWindow();
+  createOverlayWindow();
+  startWebSocketServer();
+  await requestPermissions();
 });
 
-// --- IPC HANDLERS ---
+// --- SATELLITE HANDLERS ---
 
-/**
- * Handler to open the Satellite window from the UI.
- */
-ipcMain.on('open-satellite', () => {
-  createSatelliteWindow();
-});
-
-/**
- * Received from page.jsx (Browser STT)
- * Forwards the browser-generated transcript to the overlay window.
- */
-ipcMain.on('send-subtitle', (event, data) => {
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send('receive-subtitle', data);
-  }
+ipcMain.on('open-satellite-browser', () => {
+  shell.openExternal('http://localhost:3000/satellite');
 });
 
 ipcMain.on('toggle-overlay', (event) => {
@@ -200,6 +152,7 @@ ipcMain.on('resize-overlay', (event, { width, height }) => {
 ipcMain.on('set-ignore-mouse', (event, ignore) => {
   if (overlayWindow) {
     overlayWindow.setIgnoreMouseEvents(ignore, { forward: true });
+    // Broadcast status to both windows
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('overlay-lock-status', ignore);
     }
@@ -207,12 +160,14 @@ ipcMain.on('set-ignore-mouse', (event, ignore) => {
   }
 });
 
+ipcMain.on('send-subtitle', (event, data) => {
+  if (overlayWindow) overlayWindow.webContents.send('receive-subtitle', data);
+});
+
 ipcMain.on('open-external-browser', (event, url) => {
   shell.openExternal(url);
 });
 
-// --- NATIVE MAC STT HANDLERS ---
-
 ipcMain.on('start-mac-stt', async (event, { locale }) => {
   if (process.platform !== 'darwin') {
     event.reply('mac-stt-error', 'Native STT is only supported on macOS.');
@@ -220,12 +175,15 @@ ipcMain.on('start-mac-stt', async (event, { locale }) => {
   }
 
   if (!checkMacSttBinary()) {
-    event.reply('mac-stt-error', 'SpeechHost.app not found in bin/ directory.');
+    event.reply('mac-stt-error', 'SpeechHost.app not found in bin/ directory. Please build it in Xcode first.');
     return;
   }
 
-  if (macSttProcess) macSttProcess.kill();
+  if (macSttProcess) {
+    macSttProcess.kill();
+  }
 
+  console.log(`Starting Native Host STT with locale: ${locale}`);
   macSttProcess = spawn(MAC_STT_APP_BIN, [locale]);
 
   macSttProcess.stdout.on('data', (data) => {
@@ -238,7 +196,6 @@ ipcMain.on('start-mac-stt', async (event, { locale }) => {
           mainWindow.webContents.send('mac-stt-error', json.error);
         } else if (json.transcript) {
           mainWindow.webContents.send('mac-stt-transcript', json);
-          if (overlayWindow) overlayWindow.webContents.send('receive-subtitle', json);
         }
       } catch (e) {
         console.error('Failed to parse Swift output:', line);
@@ -246,45 +203,14 @@ ipcMain.on('start-mac-stt', async (event, { locale }) => {
     }
   });
 
-  macSttProcess.stderr.on('data', (data) => console.error(`macOS STT stderr: ${data}`));
-  macSttProcess.on('close', () => macSttProcess = null);
-});
-
-ipcMain.on('start-mac-stt', async (event, { locale }) => {
-  if (process.platform !== 'darwin') {
-    event.reply('mac-stt-error', 'Native STT is only supported on macOS.');
-    return;
-  }
-
-  if (!checkMacSttBinary()) {
-    event.reply('mac-stt-error', 'SpeechHost.app not found in bin/ directory.');
-    return;
-  }
-
-  if (macSttProcess) macSttProcess.kill();
-
-  macSttProcess = spawn(MAC_STT_APP_BIN, [locale]);
-
-  macSttProcess.stdout.on('data', (data) => {
-    const lines = data.toString().split('\n');
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const json = JSON.parse(line);
-        if (json.error) {
-          mainWindow.webContents.send('mac-stt-error', json.error);
-        } else if (json.transcript) {
-          mainWindow.webContents.send('mac-stt-transcript', json);
-          if (overlayWindow) overlayWindow.webContents.send('receive-subtitle', json);
-        }
-      } catch (e) {
-        console.error('Failed to parse Swift output:', line);
-      }
-    }
+  macSttProcess.stderr.on('data', (data) => {
+    console.error(`macOS STT stderr: ${data}`);
   });
 
-  macSttProcess.stderr.on('data', (data) => console.error(`macOS STT stderr: ${data}`));
-  macSttProcess.on('close', () => macSttProcess = null);
+  macSttProcess.on('close', (code) => {
+    console.log(`macOS STT process exited with code ${code}`);
+    macSttProcess = null;
+  });
 });
 
 ipcMain.on('stop-mac-stt', () => {
