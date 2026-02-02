@@ -74,6 +74,8 @@ export default function Home() {
         setOverlayVisible(status);
       });
       ipcRenderer.on('satellite-transcript', async (event, data) => {
+        if (!isRecordingRef.current) return;
+        console.log('[Satellite Transcript Received]:', data);
         const original = data.transcript;
         if (!original) return;
 
@@ -227,6 +229,12 @@ export default function Home() {
           startNativeSpeechRecognition();
         } else {
           // In satellite mode, we just show we're "recording" (listening for transcripts)
+          if (ipcRenderer) {
+            ipcRenderer.send('broadcast-stt-command', {
+              command: 'start',
+              config: { sourceLang, targetLang, llmModel }
+            });
+          }
           setIsRecording(true);
         }
         return;
@@ -269,6 +277,10 @@ export default function Home() {
   const stopRecording = () => {
     if (sttMode === 'apple') {
       stopNativeSpeechRecognition();
+    }
+
+    if (sttMode === 'satellite' && ipcRenderer) {
+      ipcRenderer.send('broadcast-stt-command', { command: 'stop' });
     }
 
     if (mediaRecorderRef.current) {
@@ -418,6 +430,7 @@ export default function Home() {
                 <div className="space-y-3">
                   <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Recognition Engine</label>
                   <div className="flex bg-[#0f172a] p-1 rounded-xl border border-[#334155]">
+
                     <button
                       onClick={() => setSttMode('cloud')}
                       className={`flex-1 py-2 px-3 rounded-l-lg text-[10px] font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
@@ -426,13 +439,15 @@ export default function Home() {
                     </button>
                     <button
                       onClick={() => setSttMode('gemini')}
-                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'gemini' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                      disabled
+                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'gemini' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
                     >
                       Gemini AI
                     </button>
                     <button
                       onClick={() => setSttMode('apple')}
-                      className={`flex-1 py-2 px-3 border-r border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                      disabled
+                      className={`flex-1 py-2 px-3 border-r border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
                     >
                       Apple Native
                     </button>

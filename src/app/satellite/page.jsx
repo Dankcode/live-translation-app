@@ -4,16 +4,15 @@ import { useEffect, useState, useRef } from 'react';
 
 /**
  * Satellite Page Component
- * Ensure this file is saved as: app/satellite/page.jsx
- * This page is intended to be opened in a browser or a secondary Electron window.
- * It handles the browser's native Web Speech API (Free STT) and sends data back to Electron.
- * This version uses 'send-subtitle' to communicate with main.js.
+ * Handles the browser's native Web Speech API (Free STT) and sends data back to Electron via WebSocket or IPC.
  */
 export default function SatellitePage() {
     const [status, setStatus] = useState('Idle - Waiting for Command');
     const [isActive, setIsActive] = useState(false);
     const [logs, setLogs] = useState(['Engine initialized...']);
     const recognitionRef = useRef(null);
+    const wsRef = useRef(null);
+    const isRecognitionRunningRef = useRef(false);
 
     // Safe access to Electron IPC
     const ipc = typeof window !== 'undefined' && window.require
@@ -21,134 +20,170 @@ export default function SatellitePage() {
         : null;
 
     const addLog = (msg) => {
+        console.log(`[Satellite Log]: ${msg}`);
         setLogs(prev => [...prev.slice(-20), msg]); // Keep last 20 logs
     };
 
-    const wsRef = useRef(null);
-
     useEffect(() => {
-        if (!ipc) {
-            const socket = new WebSocket('ws://localhost:8080');
-            wsRef.current = socket;
-
-            socket.onopen = () => {
-                addLog("Connected to Electron Host via WebSocket.");
-                setStatus("Connected - Ready");
-                // Immediately start recognition in browser mode for simplicity
-                window._shouldBeActive = true;
-                if (recognitionRef.current) {
-                    try { recognitionRef.current.start(); } catch (e) { }
-                }
-            };
-
-            socket.onclose = () => {
-                addLog("Disconnected from Electron Host.");
-                setStatus("Disconnected");
-            };
-
-            return () => socket.close();
-        }
-    }, [ipc]);
-
-    useEffect(() => {
-        // Initialize Speech Recognition
+        // --- 1. Initialize Speech Recognition ---
         const SpeechRecognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
 
-        if (SpeechRecognition) {
-            recognitionRef.current = new SpeechRecognition();
-            const recognition = recognitionRef.current;
-
-            recognition.continuous = true;
-            recognition.interimResults = true;
-
-            recognition.onstart = () => {
-                addLog("Microphone access granted. Listening...");
-                setStatus("Listening...");
-                setIsActive(true);
-            };
-
-            recognition.onresult = (event) => {
-                let interimTranscript = '';
-                let finalTranscript = '';
-
-                for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                        finalTranscript += event.results[i][0].transcript;
-                    } else {
-                        interimTranscript += event.results[i][0].transcript;
-                    }
-                }
-
-                const text = finalTranscript || interimTranscript;
-                if (text) {
-                    addLog(`Detected: ${text.substring(0, 30)}...`);
-
-                    // Send the data back to Electron main.js using 'send-subtitle'
-                    // Matching your ipcrenderer.js structure
-                    if (ipc) {
-                        ipc.send('send-subtitle', {
-                            transcript: text,
-                            isFinal: finalTranscript !== '',
-                            timestamp: Date.now()
-                        });
-                    } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                        wsRef.current.send(JSON.stringify({
-                            transcript: text,
-                            isFinal: finalTranscript !== '',
-                            timestamp: Date.now()
-                        }));
-                    }
-                }
-            };
-
-            recognition.onerror = (event) => {
-                addLog(`Error: ${event.error}`);
-                if (event.error === 'not-allowed') {
-                    setStatus("Mic Blocked");
-                }
-            };
-
-            recognition.onend = () => {
-                // Auto-restart if we're supposed to be active (prevents timeouts)
-                if (window._shouldBeActive) {
-                    addLog("Restarting stream...");
-                    try { recognition.start(); } catch (e) { }
-                } else {
-                    addLog("Stream ended.");
-                    setStatus("Idle");
-                    setIsActive(false);
-                }
-            };
-        } else {
+        if (!SpeechRecognition) {
             addLog("Error: Web Speech API not supported.");
             setStatus("Not Supported");
+            return;
         }
 
-        // Handle IPC Commands from Electron Main
-        if (ipc) {
-            const handleStart = (event, config) => {
-                addLog(`Command: Start (Lang: ${config.sourceLang})`);
-                window._shouldBeActive = true;
-                if (recognitionRef.current) {
-                    recognitionRef.current.lang = config.sourceLang || 'en-US';
-                    try { recognitionRef.current.start(); } catch (e) { addLog("Already running"); }
-                }
-            };
+        const recognition = new SpeechRecognition();
+        recognitionRef.current = recognition;
+        recognition.continuous = true;
+        recognition.interimResults = true;
 
-            const handleStop = () => {
-                addLog("Command: Stop");
-                window._shouldBeActive = false;
-                if (recognitionRef.current) {
-                    recognitionRef.current.stop();
+        recognition.onstart = () => {
+            addLog("Microphone listening...");
+            setStatus("Listening...");
+            setIsActive(true);
+            isRecognitionRunningRef.current = true;
+        };
+
+        recognition.onresult = (event) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
                 }
-            };
+            }
+
+            const text = finalTranscript || interimTranscript;
+            if (text) {
+                addLog(`Detected: ${text.substring(0, 30)}...`);
+
+                const payload = {
+                    transcript: text,
+                    isFinal: finalTranscript !== '',
+                    timestamp: Date.now()
+                };
+
+                if (ipc) {
+                    ipc.send('send-subtitle', payload);
+                } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify(payload));
+                }
+            }
+        };
+
+        recognition.onerror = (event) => {
+            addLog(`Error: ${event.error}`);
+            if (event.error === 'not-allowed') {
+                setStatus("Mic Blocked");
+            }
+        };
+
+        recognition.onend = () => {
+            addLog("Recognition stream ended.");
+            isRecognitionRunningRef.current = false;
+
+            // Auto-restart if we're supposed to be active (prevents timeouts)
+            if (window._shouldBeActive) {
+                addLog("Attempting auto-restart...");
+                try {
+                    recognition.start();
+                } catch (e) {
+                    addLog(`Restart failed: ${e.message}`);
+                }
+            } else {
+                setStatus("Idle");
+                setIsActive(false);
+            }
+        };
+
+        // --- 2. Helper for Command Execution ---
+        const executeStart = (sourceLang) => {
+            addLog(`Execute Start (Lang: ${sourceLang || 'default'})`);
+            window._shouldBeActive = true;
+
+            // Update language
+            if (sourceLang) {
+                recognition.lang = sourceLang;
+            }
+
+            if (isRecognitionRunningRef.current) {
+                addLog("Already running, restarting to apply language...");
+                recognition.stop(); // onend will catch window._shouldBeActive = true and restart
+            } else {
+                try {
+                    recognition.start();
+                } catch (e) {
+                    addLog(`Start failed: ${e.message}`);
+                }
+            }
+        };
+
+        const executeStop = () => {
+            addLog("Execute Stop");
+            window._shouldBeActive = false;
+            if (isRecognitionRunningRef.current) {
+                recognition.stop();
+            }
+        };
+
+        // --- 3. Communication Handlers (IPC or WebSocket) ---
+        if (ipc) {
+            const handleStart = (event, config) => executeStart(config?.sourceLang);
+            const handleStop = () => executeStop();
 
             ipc.on('start-stt', handleStart);
             ipc.on('stop-stt', handleStop);
 
+            addLog("Electron IPC Listeners initialized.");
+
             return () => {
                 ipc.removeListener('start-stt', handleStart);
                 ipc.removeListener('stop-stt', handleStop);
+                recognition.stop();
+            };
+        } else {
+            // Standalone Browser Mode
+            const socket = new WebSocket('ws://localhost:8080');
+            wsRef.current = socket;
+
+            socket.onopen = () => {
+                addLog("Connected to Electron via WebSocket.");
+                setStatus("Connected - Ready");
+                // Initial start in browser mode
+                executeStart();
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'command') {
+                        if (data.command === 'start') {
+                            addLog(`Remote Command: START received (${data.config?.sourceLang || 'auto'})`);
+                            executeStart(data.config?.sourceLang);
+                        } else if (data.command === 'stop') {
+                            addLog("Remote Command: STOP received");
+                            executeStop();
+                        }
+                    }
+                } catch (e) {
+                    addLog("Failed to parse remote command.");
+                }
+            };
+
+            socket.onclose = () => {
+                addLog("Disconnected from Electron.");
+                setStatus("Disconnected");
+                executeStop();
+            };
+
+            return () => {
+                socket.close();
+                recognition.stop();
             };
         }
     }, [ipc]);
@@ -200,7 +235,7 @@ export default function SatellitePage() {
 
                 {!ipc && (
                     <p className="mt-4 text-[10px] text-yellow-500/50">
-                        Running in Standalone Browser Mode (IPC unavailable)
+                        Connected via WebSocket (Browser Mode)
                     </p>
                 )}
             </div>
