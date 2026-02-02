@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Mic, MicOff, Settings, Monitor, Languages, Sparkles, ChevronDown, Key } from 'lucide-react';
+import { Mic, MicOff, Settings, Monitor, Languages, Sparkles, ChevronDown, Key, History } from 'lucide-react';
 import { translateText } from '@/lib/translator';
 
 const { ipcRenderer } = (typeof window !== 'undefined' && typeof window.require === 'function') ? window.require('electron') : { ipcRenderer: null };
@@ -10,6 +10,7 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [sourceLang, setSourceLang] = useState('en-US');
   const [targetLang, setTargetLang] = useState('es');
+  const [transcriptLimit, setTranscriptLimit] = useState(50);
   const [transcript, setTranscript] = useState({ original: '', translated: '' });
   const [transcriptHistory, setTranscriptHistory] = useState([]); // List of {original, translated, isFinal}
   const [overlayVisible, setOverlayVisible] = useState(false);
@@ -94,7 +95,7 @@ export default function Home() {
             newHistory.unshift({ original, translated: '', isFinal: data.isFinal });
           }
 
-          newHistory = newHistory.slice(0, 10); // Keep last 10 segments
+          newHistory = newHistory.slice(0, transcriptLimit); // Keep last N segments
 
           // Synchronize main UI single transcript state
           setTranscript({ original, translated: newHistory[0].translated || '...' });
@@ -208,7 +209,7 @@ export default function Home() {
 
           const result = { original, translated, isFinal: true, timestamp: Date.now() };
           setTranscript(result);
-          setTranscriptHistory(prev => [result, ...prev].slice(0, 10));
+          setTranscriptHistory(prev => [result, ...prev].slice(0, transcriptLimit));
           if (ipcRenderer) ipcRenderer.send('send-subtitle', [result]);
         } catch (error) {
           console.error('Audio processing failed:', error);
@@ -654,6 +655,29 @@ export default function Home() {
                 </div>
               )}
             </div>
+
+            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-5 shadow-xl backdrop-blur-sm">
+              <div className="flex items-center gap-3 text-purple-400 mb-2">
+                <History className="w-5 h-5" />
+                <h2 className="text-lg font-bold tracking-tight">Display Settings</h2>
+              </div>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-slate-400">History Segments</span>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="number"
+                      min="1"
+                      max="200"
+                      value={transcriptLimit}
+                      onChange={(e) => setTranscriptLimit(parseInt(e.target.value) || 1)}
+                      className="w-20 bg-slate-900/50 border border-slate-700/50 rounded-lg px-3 py-1 text-sm text-white focus:outline-none focus:border-purple-500/50 transition-colors"
+                    />
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Lines</span>
+                  </div>
+                </div>
+              </div>
+            </section>
 
             <div className="p-6 bg-[#1e293b]/20 border border-[#334155]/30 rounded-3xl">
               <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
