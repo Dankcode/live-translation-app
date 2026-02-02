@@ -65,8 +65,8 @@ function broadcastOverlayStatus() {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1000,
-    height: 850,
+    width: 1200,
+    height: 900,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -138,6 +138,25 @@ ipcMain.on('toggle-overlay', (event) => {
 
 ipcMain.on('get-overlay-status', (event) => {
   event.reply('overlay-status', overlayWindow ? overlayWindow.isVisible() : false);
+});
+
+ipcMain.on('broadcast-stt-command', (event, { command, config }) => {
+  // 1. Send to Satellite Electron window (if any) via IPC
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    // Note: The satellite page might be in the overlay or a separate window.
+    // In our current structure, it's usually opened via open-satellite-browser.
+    // We don't track a specific 'satelliteWindow' variable, so we rely on WebSocket for browsers.
+  }
+
+  // 2. Broadcast to all WebSocket clients (Browser Satellite)
+  if (wss) {
+    const payload = JSON.stringify({ type: 'command', command, config });
+    wss.clients.forEach((client) => {
+      if (client.readyState === 1) { // WebSocket.OPEN
+        client.send(payload);
+      }
+    });
+  }
 });
 
 ipcMain.on('close-overlay', () => {

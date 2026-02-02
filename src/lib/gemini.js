@@ -121,8 +121,9 @@ export async function geminiSTT(audioBase64, languageCode = 'en-US', modelName =
 
         const preferredModelIds = Array.from(new Set([
             modelName,
-            DEFAULT_STT_MODEL,
             'gemini-2.5-flash',
+            'gemini-1.5-flash-latest',
+            DEFAULT_STT_MODEL,
             'gemini-2.0-flash',
             'gemini-2.0-flash-001',
             'gemini-2.0-flash-lite',
@@ -197,7 +198,7 @@ export async function geminiSTT(audioBase64, languageCode = 'en-US', modelName =
                         modelCache.set(cacheKey, { modelId: modelIdToUse, updatedAt: Date.now() });
                         return transcript.trim();
                     }
-                    
+
                     try {
                         directErrorData = await retryResponse.json();
                     } catch { /* ignore */ }

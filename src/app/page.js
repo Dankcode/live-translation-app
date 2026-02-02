@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Mic, MicOff, Settings, Monitor, Languages, Sparkles, ChevronDown, Key } from 'lucide-react';
+import { Mic, MicOff, Settings, Monitor, Languages, Sparkles, ChevronDown, Key, History } from 'lucide-react';
 import { translateText } from '@/lib/translator';
 
 const { ipcRenderer } = (typeof window !== 'undefined' && typeof window.require === 'function') ? window.require('electron') : { ipcRenderer: null };
@@ -10,6 +10,7 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [sourceLang, setSourceLang] = useState('en-US');
   const [targetLang, setTargetLang] = useState('es');
+  const [transcriptLimit, setTranscriptLimit] = useState(50);
   const [transcript, setTranscript] = useState({ original: '', translated: '' });
   const [transcriptHistory, setTranscriptHistory] = useState([]); // List of {original, translated, isFinal}
   const [overlayVisible, setOverlayVisible] = useState(false);
@@ -17,7 +18,7 @@ export default function Home() {
   const [hasMounted, setHasMounted] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [cloudApiKey, setCloudApiKey] = useState('');
-  const [sttMode, setSttMode] = useState('cloud'); // 'gemini' or 'cloud'
+  const [sttMode, setSttMode] = useState('satellite'); // 'gemini' or 'cloud'
   const [sttError, setSttError] = useState('');
   const [showUsageModal, setShowUsageModal] = useState(false);
   const [usageStats, setUsageStats] = useState(null);
@@ -74,12 +75,14 @@ export default function Home() {
         setOverlayVisible(status);
       });
       ipcRenderer.on('satellite-transcript', async (event, data) => {
+        if (!isRecordingRef.current) return;
+        console.log('[Satellite Transcript Received]:', data);
         const original = data.transcript;
-        if (!original) return;
+        if (!original || !original.trim()) return;
 
         const now = Date.now();
         const shouldTriggerInterim = !data.isFinal &&
-          (original.length > lastInterimRef.current.length + 40 || now > lastInterimRef.current.time + 3000);
+          (original.length > lastInterimRef.current.length + 25 || now > lastInterimRef.current.time + 1500);
 
         // 1. Update History & Overlay (Immediate feedback)
         setTranscriptHistory(prev => {
@@ -92,7 +95,7 @@ export default function Home() {
             newHistory.unshift({ original, translated: '', isFinal: data.isFinal });
           }
 
-          newHistory = newHistory.slice(0, 3); // Keep last 3 segments
+          newHistory = newHistory.slice(0, transcriptLimit); // Keep last N segments
 
           // Synchronize main UI single transcript state
           setTranscript({ original, translated: newHistory[0].translated || '...' });
@@ -194,21 +197,20 @@ export default function Home() {
             return;
           }
           setSttError('');
-          if (data.transcript) {
-            const original = data.transcript;
-            // Use geminiApiKey for translation/refinement
-            const translated = await translateText(
-              original,
-              sourceLang.split('-')[0],
-              targetLangRef.current,
-              llmModelRef.current,
-              geminiApiKey
-            );
+          const original = data.transcript;
+          if (!original || !original.trim()) return;
+          const translated = await translateText(
+            original,
+            sourceLang.split('-')[0],
+            targetLangRef.current,
+            llmModelRef.current,
+            geminiApiKey
+          );
 
-            const result = { original, translated };
-            setTranscript(result);
-            if (ipcRenderer) ipcRenderer.send('send-subtitle', result);
-          }
+          const result = { original, translated, isFinal: true, timestamp: Date.now() };
+          setTranscript(result);
+          setTranscriptHistory(prev => [result, ...prev].slice(0, transcriptLimit));
+          if (ipcRenderer) ipcRenderer.send('send-subtitle', [result]);
         } catch (error) {
           console.error('Audio processing failed:', error);
           setSttError(error?.message || 'Audio processing failed');
@@ -221,9 +223,20 @@ export default function Home() {
 
   const startRecording = async () => {
     try {
-      if (sttMode === 'apple') {
+      if (sttMode === 'apple' || sttMode === 'satellite') {
         setSttError('');
-        startNativeSpeechRecognition();
+        if (sttMode === 'apple') {
+          startNativeSpeechRecognition();
+        } else {
+          // In satellite mode, we just show we're "recording" (listening for transcripts)
+          if (ipcRenderer) {
+            ipcRenderer.send('broadcast-stt-command', {
+              command: 'start',
+              config: { sourceLang, targetLang, llmModel }
+            });
+          }
+          setIsRecording(true);
+        }
         return;
       }
 
@@ -264,6 +277,10 @@ export default function Home() {
   const stopRecording = () => {
     if (sttMode === 'apple') {
       stopNativeSpeechRecognition();
+    }
+
+    if (sttMode === 'satellite' && ipcRenderer) {
+      ipcRenderer.send('broadcast-stt-command', { command: 'stop' });
     }
 
     if (mediaRecorderRef.current) {
@@ -376,6 +393,21 @@ export default function Home() {
     }
   };
 
+  const clearApiKeys = () => {
+    localStorage.removeItem('google_gemini_api_key');
+    localStorage.removeItem('google_cloud_stt_api_key');
+    setGeminiApiKey('');
+    setCloudApiKey('');
+  };
+
+  const clearTranscript = () => {
+    setTranscript({ original: '', translated: '' });
+    setTranscriptHistory([]);
+    if (ipcRenderer) {
+      ipcRenderer.send('send-subtitle', []);
+    }
+  };
+
   const formatDuration = (seconds) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
@@ -384,18 +416,18 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-10 font-sans selection:bg-blue-500/30" suppressHydrationWarning>
-      <div className="max-w-6xl mx-auto">
-        <header className="flex items-center gap-3 mb-10">
+    <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-8 font-sans selection:bg-blue-500/30" suppressHydrationWarning>
+      <div className="max-w-[1300px] mx-auto">
+        <header className="flex items-center gap-3 mb-8">
           <div className="bg-[#2563eb] p-2 rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.4)]">
             <Languages className="w-8 h-8 text-white" />
           </div>
           <h1 className="text-3xl font-bold text-white tracking-tight">Scribe Center</h1>
         </header>
 
-        <div className="grid grid-cols-[450px_1fr] gap-10 items-start">
-          <div className="space-y-6">
-            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-8 rounded-3xl space-y-8 shadow-xl backdrop-blur-sm relative">
+        <div className="grid grid-cols-[400px_1fr] gap-8 items-stretch">
+          <div className="space-y-4">
+            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-5 shadow-xl backdrop-blur-sm relative">
               <div className="flex items-center gap-3 text-blue-400 mb-2">
                 <Monitor className="w-5 h-5" />
                 <h2 className="text-base font-bold uppercase tracking-widest">Configuration</h2>
@@ -407,28 +439,30 @@ export default function Home() {
                   <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Recognition Engine</label>
                   <div className="flex bg-[#0f172a] p-1 rounded-xl border border-[#334155]">
                     <button
+                      onClick={() => setSttMode('satellite')}
+                      className={`flex-1 py-2 px-3 rounded-l-lg text-[10px] font-bold transition-all ${sttMode === 'satellite' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Satellite
+                    </button>
+                    <button
                       onClick={() => setSttMode('cloud')}
-                      className={`flex-1 py-2 px-3 rounded-l-lg text-[10px] font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
                     >
                       Cloud STT
                     </button>
                     <button
                       onClick={() => setSttMode('gemini')}
-                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'gemini' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                      disabled
+                      className={`flex-1 py-2 px-3 border-r border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'gemini' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
                     >
                       Gemini AI
                     </button>
                     <button
                       onClick={() => setSttMode('apple')}
-                      className={`flex-1 py-2 px-3 border-r border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                      disabled
+                      className={`flex-1 py-2 px-3 rounded-r-lg text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
                     >
                       Apple Native
-                    </button>
-                    <button
-                      onClick={() => setSttMode('satellite')}
-                      className={`flex-1 py-2 px-3 rounded-r-lg text-[10px] font-bold transition-all ${sttMode === 'satellite' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
-                    >
-                      Satellite
                     </button>
                   </div>
                 </div>
@@ -530,23 +564,30 @@ export default function Home() {
                     </select>
                     <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                   </div>
-                  <div className="pt-2">
+                  <div className="pt-2 grid grid-cols-2 gap-2">
                     <button
                       onClick={() => {
                         fetchUsageStats();
                         setShowUsageModal(true);
                       }}
-                      className="w-full py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-blue-400 hover:border-blue-500/50 transition-all text-xs font-bold flex items-center justify-center gap-2"
+                      className="py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-blue-400 hover:border-blue-500/50 transition-all text-[10px] font-bold flex items-center justify-center gap-2"
                     >
                       <Monitor className="w-3.5 h-3.5" />
-                      View Daily Usage Stats
+                      Usage Stats
+                    </button>
+                    <button
+                      onClick={clearApiKeys}
+                      className="py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-red-400 hover:border-red-500/50 transition-all text-[10px] font-bold flex items-center justify-center gap-2"
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                      Clear Cache
                     </button>
                   </div>
                 </div>
               </div>
             </section>
 
-            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-8 rounded-3xl space-y-4 shadow-lg backdrop-blur-sm">
+            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-4 shadow-lg backdrop-blur-sm">
               <div className="flex items-center justify-between text-indigo-400">
                 <div className="flex items-center gap-3">
                   <Sparkles className="w-5 h-5" />
@@ -615,6 +656,29 @@ export default function Home() {
               )}
             </div>
 
+            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-5 shadow-xl backdrop-blur-sm">
+              <div className="flex items-center gap-3 text-purple-400 mb-2">
+                <History className="w-5 h-5" />
+                <h2 className="text-lg font-bold tracking-tight">Display Settings</h2>
+              </div>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-slate-400">History Segments</span>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="number"
+                      min="1"
+                      max="200"
+                      value={transcriptLimit}
+                      onChange={(e) => setTranscriptLimit(parseInt(e.target.value) || 1)}
+                      className="w-20 bg-slate-900/50 border border-slate-700/50 rounded-lg px-3 py-1 text-sm text-white focus:outline-none focus:border-purple-500/50 transition-colors"
+                    />
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Lines</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
             <div className="p-6 bg-[#1e293b]/20 border border-[#334155]/30 rounded-3xl">
               <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
                 <Sparkles className="w-3 h-3 inline mr-2 text-indigo-400/60" />
@@ -623,31 +687,63 @@ export default function Home() {
             </div>
           </div>
 
-          <section className="bg-[#1e293b]/20 border border-[#334155]/20 rounded-[2.5rem] p-12 flex flex-col min-h-[600px] shadow-2xl relative overflow-hidden group">
+          <section className="bg-[#1e293b]/20 border border-[#334155]/20 rounded-[2.5rem] p-8 flex flex-col h-full shadow-2xl relative overflow-hidden group">
             <div className="absolute top-0 right-0 p-12 opacity-[0.03] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
               <Languages className="w-48 h-48" />
             </div>
 
-            <h2 className="text-lg font-bold text-white mb-10 flex items-center gap-3">
-              <Languages className="w-5 h-5 text-indigo-400" /> Live Feedback
-            </h2>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-lg font-bold text-white flex items-center gap-3">
+                <Languages className="w-5 h-5 text-indigo-400" /> Live Feedback
+              </h2>
+              <button
+                onClick={clearTranscript}
+                className="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/20 text-[10px] font-bold text-slate-500 hover:text-indigo-400 hover:border-indigo-500/50 transition-all flex items-center gap-2"
+              >
+                Clear Content
+              </button>
+            </div>
 
-            <div className="space-y-12 flex-1">
-              <div className="space-y-4">
-                <span className="text-[10px] text-slate-500 uppercase font-black tracking-[0.2em] block">Original (Recognized)</span>
-                <p className={`text-2xl font-medium leading-relaxed transition-all duration-500 ${transcript.original ? 'text-slate-200' : 'text-slate-600 italic'}`}>
-                  {transcript.original || (isRecording ? "Listening..." : "Click Start to begin...")}
-                </p>
-              </div>
+            <div className="space-y-4 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+              {transcriptHistory.length === 0 ? (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-xl bg-slate-800/20 border border-slate-700/30">
+                    <p className="text-base font-medium leading-relaxed text-slate-600 italic">
+                      {isRecording ? "Listening..." : "Click Start to begin..."}
+                    </p>
+                  </div>
+                  <div className="p-6 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
+                    <p className="text-2xl font-bold leading-tight tracking-tight text-slate-800">
+                      ---
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                transcriptHistory.map((item, idx) => (
+                  <div key={idx} className={`space-y-2 animate-in fade-in slide-in-from-bottom-2 duration-500 ${idx !== 0 ? 'opacity-40 grayscale-[0.5] scale-[0.98] origin-top' : ''}`}>
+                    {/* Original Block */}
+                    <div className="p-3.5 pt-7 rounded-xl bg-slate-800/40 border border-slate-700/50 relative group/block">
+                      {!item.isFinal && (
+                        <div className="absolute top-2 left-2 bg-blue-600 text-[7px] font-black uppercase px-1.5 py-0.5 rounded shadow-lg animate-pulse z-10">
+                          Live
+                        </div>
+                      )}
+                      <p className="text-sm font-medium leading-relaxed text-slate-300">
+                        {item.original}
+                      </p>
+                    </div>
 
-              <div className="h-px bg-[#334155]/30 w-full" />
+                    {/* Translated Block */}
+                    <div className="p-5 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 relative shadow-inner">
+                      <p className="text-xl font-bold leading-snug tracking-tight text-white drop-shadow-sm">
+                        {item.translated || (item.isFinal ? "Translating..." : "...")}
+                      </p>
+                    </div>
 
-              <div className="space-y-4">
-                <span className="text-[10px] text-indigo-500/80 uppercase font-black tracking-[0.2em] block">Translated</span>
-                <p className={`text-4xl font-bold leading-tight tracking-tight transition-all duration-700 ${transcript.translated ? 'text-white' : 'text-slate-800'}`}>
-                  {transcript.translated || "---"}
-                </p>
-              </div>
+                    {idx !== transcriptHistory.length - 1 && <div className="h-2" />}
+                  </div>
+                ))
+              )}
             </div>
 
             {isRecording && hasMounted && (
