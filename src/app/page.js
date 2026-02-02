@@ -400,6 +400,14 @@ export default function Home() {
     setCloudApiKey('');
   };
 
+  const clearTranscript = () => {
+    setTranscript({ original: '', translated: '' });
+    setTranscriptHistory([]);
+    if (ipcRenderer) {
+      ipcRenderer.send('send-subtitle', []);
+    }
+  };
+
   const formatDuration = (seconds) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
@@ -662,9 +670,17 @@ export default function Home() {
               <Languages className="w-48 h-48" />
             </div>
 
-            <h2 className="text-lg font-bold text-white mb-10 flex items-center gap-3">
-              <Languages className="w-5 h-5 text-indigo-400" /> Live Feedback
-            </h2>
+            <div className="flex items-center justify-between mb-10">
+              <h2 className="text-lg font-bold text-white flex items-center gap-3">
+                <Languages className="w-5 h-5 text-indigo-400" /> Live Feedback
+              </h2>
+              <button
+                onClick={clearTranscript}
+                className="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/20 text-[10px] font-bold text-slate-500 hover:text-indigo-400 hover:border-indigo-500/50 transition-all flex items-center gap-2"
+              >
+                Clear Content
+              </button>
+            </div>
 
             <div className="space-y-12 flex-1">
               <div className="space-y-4">
