@@ -94,7 +94,7 @@ export default function Home() {
             newHistory.unshift({ original, translated: '', isFinal: data.isFinal });
           }
 
-          newHistory = newHistory.slice(0, 3); // Keep last 3 segments
+          newHistory = newHistory.slice(0, 10); // Keep last 10 segments
 
           // Synchronize main UI single transcript state
           setTranscript({ original, translated: newHistory[0].translated || '...' });
@@ -196,21 +196,19 @@ export default function Home() {
             return;
           }
           setSttError('');
-          if (data.transcript) {
-            const original = data.transcript;
-            // Use geminiApiKey for translation/refinement
-            const translated = await translateText(
-              original,
-              sourceLang.split('-')[0],
-              targetLangRef.current,
-              llmModelRef.current,
-              geminiApiKey
-            );
+          const original = data.transcript;
+          const translated = await translateText(
+            original,
+            sourceLang.split('-')[0],
+            targetLangRef.current,
+            llmModelRef.current,
+            geminiApiKey
+          );
 
-            const result = { original, translated };
-            setTranscript(result);
-            if (ipcRenderer) ipcRenderer.send('send-subtitle', result);
-          }
+          const result = { original, translated, isFinal: true, timestamp: Date.now() };
+          setTranscript(result);
+          setTranscriptHistory(prev => [result, ...prev].slice(0, 10));
+          if (ipcRenderer) ipcRenderer.send('send-subtitle', [result]);
         } catch (error) {
           console.error('Audio processing failed:', error);
           setSttError(error?.message || 'Audio processing failed');
@@ -682,22 +680,46 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="space-y-12 flex-1">
-              <div className="space-y-4">
-                <span className="text-[10px] text-slate-500 uppercase font-black tracking-[0.2em] block">Original (Recognized)</span>
-                <p className={`text-2xl font-medium leading-relaxed transition-all duration-500 ${transcript.original ? 'text-slate-200' : 'text-slate-600 italic'}`}>
-                  {transcript.original || (isRecording ? "Listening..." : "Click Start to begin...")}
-                </p>
-              </div>
+            <div className="space-y-6 flex-1 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar">
+              {transcriptHistory.length === 0 ? (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-xl bg-slate-800/20 border border-slate-700/30">
+                    <p className="text-base font-medium leading-relaxed text-slate-600 italic">
+                      {isRecording ? "Listening..." : "Click Start to begin..."}
+                    </p>
+                  </div>
+                  <div className="p-6 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
+                    <p className="text-2xl font-bold leading-tight tracking-tight text-slate-800">
+                      ---
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                transcriptHistory.map((item, idx) => (
+                  <div key={idx} className={`space-y-2 animate-in fade-in slide-in-from-bottom-2 duration-500 ${idx !== 0 ? 'opacity-40 grayscale-[0.5] scale-[0.98] origin-top' : ''}`}>
+                    {/* Original Block */}
+                    <div className="p-3.5 rounded-xl bg-slate-800/40 border border-slate-700/50 relative group/block">
+                      {!item.isFinal && (
+                        <div className="absolute -top-1.5 -left-1.5 bg-blue-600 text-[7px] font-black uppercase px-1.5 py-0.5 rounded shadow-lg animate-pulse z-10">
+                          Live
+                        </div>
+                      )}
+                      <p className="text-sm font-medium leading-relaxed text-slate-300">
+                        {item.original}
+                      </p>
+                    </div>
 
-              <div className="h-px bg-[#334155]/30 w-full" />
+                    {/* Translated Block */}
+                    <div className="p-5 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 relative shadow-inner">
+                      <p className="text-xl font-bold leading-snug tracking-tight text-white drop-shadow-sm">
+                        {item.translated || (item.isFinal ? "Translating..." : "...")}
+                      </p>
+                    </div>
 
-              <div className="space-y-4">
-                <span className="text-[10px] text-indigo-500/80 uppercase font-black tracking-[0.2em] block">Translated</span>
-                <p className={`text-4xl font-bold leading-tight tracking-tight transition-all duration-700 ${transcript.translated ? 'text-white' : 'text-slate-800'}`}>
-                  {transcript.translated || "---"}
-                </p>
-              </div>
+                    {idx !== transcriptHistory.length - 1 && <div className="h-2" />}
+                  </div>
+                ))
+              )}
             </div>
 
             {isRecording && hasMounted && (

@@ -60,11 +60,17 @@ export default function SatellitePage() {
 
             const text = finalTranscript || interimTranscript;
             if (text) {
-                addLog(`Detected: ${text.substring(0, 30)}...`);
+                const isFinal = finalTranscript !== '';
+                // To reduce noise, only log final results or when a significant interim chunk is added
+                if (isFinal) {
+                    addLog(`Final: ${text}`);
+                } else if (text.length % 10 === 0) { // Very basic throttle for interim logs
+                    addLog(`Detecting: ${text.substring(0, 30)}...`);
+                }
 
                 const payload = {
                     transcript: text,
-                    isFinal: finalTranscript !== '',
+                    isFinal: isFinal,
                     timestamp: Date.now()
                 };
 
