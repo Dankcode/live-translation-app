@@ -59,7 +59,7 @@ export default function SatellitePage() {
             }
 
             const text = finalTranscript || interimTranscript;
-            if (text) {
+            if (text && text.trim()) {
                 const isFinal = finalTranscript !== '';
                 // To reduce noise, only log final results or when a significant interim chunk is added
                 if (isFinal) {

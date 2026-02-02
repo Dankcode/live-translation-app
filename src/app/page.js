@@ -17,7 +17,7 @@ export default function Home() {
   const [hasMounted, setHasMounted] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [cloudApiKey, setCloudApiKey] = useState('');
-  const [sttMode, setSttMode] = useState('cloud'); // 'gemini' or 'cloud'
+  const [sttMode, setSttMode] = useState('satellite'); // 'gemini' or 'cloud'
   const [sttError, setSttError] = useState('');
   const [showUsageModal, setShowUsageModal] = useState(false);
   const [usageStats, setUsageStats] = useState(null);
@@ -77,11 +77,11 @@ export default function Home() {
         if (!isRecordingRef.current) return;
         console.log('[Satellite Transcript Received]:', data);
         const original = data.transcript;
-        if (!original) return;
+        if (!original || !original.trim()) return;
 
         const now = Date.now();
         const shouldTriggerInterim = !data.isFinal &&
-          (original.length > lastInterimRef.current.length + 40 || now > lastInterimRef.current.time + 3000);
+          (original.length > lastInterimRef.current.length + 25 || now > lastInterimRef.current.time + 1500);
 
         // 1. Update History & Overlay (Immediate feedback)
         setTranscriptHistory(prev => {
@@ -197,6 +197,7 @@ export default function Home() {
           }
           setSttError('');
           const original = data.transcript;
+          if (!original || !original.trim()) return;
           const translated = await translateText(
             original,
             sourceLang.split('-')[0],
