@@ -30,7 +30,7 @@ export async function POST(request) {
             if (!apiKey) {
                 return NextResponse.json({ error: 'Gemini API key is required when using Gemini STT' }, { status: 400 });
             }
-            transcript = await geminiSTT(audio, languageCode || 'en-US', modelName || 'gemini-2.0-flash', apiKey);
+            transcript = await geminiSTT(audio, languageCode || 'en-US', modelName || 'gemini-1.5-flash', apiKey);
         }
 
         return NextResponse.json({ transcript });

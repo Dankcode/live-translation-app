@@ -70,7 +70,7 @@ function parseRetryAfterSeconds(message) {
 
 const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
 const modelCache = new Map(); // key: `${apiVersion}:${hashKey(apiKey)}` => { modelId, updatedAt }
-const DEFAULT_STT_MODEL = 'gemini-2.0-flash';
+const DEFAULT_STT_MODEL = 'gemini-1.5-flash';
 
 async function listModels(apiKey, apiVersion) {
     const url = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${apiKey}`;
@@ -179,8 +179,32 @@ export async function geminiSTT(audioBase64, languageCode = 'en-US', modelName =
             const retryAfterSeconds = parseRetryAfterSeconds(directErrorData?.error?.message);
             if (retryAfterSeconds != null) lastError.retryAfterSeconds = retryAfterSeconds;
 
-            // Rate limit/quota: don't try other API versions.
-            if (directResponse.status === 429) throw lastError;
+            // Rate limit/quota: try fallback or throw.
+            if (directResponse.status === 429) {
+                if (modelIdToUse !== 'gemini-1.5-flash' && modelIdToUse !== 'gemini-1.5-flash-latest') {
+                    console.warn(`[Gemini STT] ${modelIdToUse} hit 429. Trying fallback gemini-1.5-flash...`);
+                    modelIdToUse = 'gemini-1.5-flash';
+                    const retryUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models/${modelIdToUse}:generateContent?key=${apiKey}`;
+                    const retryResponse = await fetch(retryUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(requestBody),
+                    });
+
+                    if (retryResponse.ok) {
+                        const data = await retryResponse.json();
+                        const transcript = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                        modelCache.set(cacheKey, { modelId: modelIdToUse, updatedAt: Date.now() });
+                        return transcript.trim();
+                    }
+                    
+                    try {
+                        directErrorData = await retryResponse.json();
+                    } catch { /* ignore */ }
+                    throw new Error(`Gemini STT fallback failed: ${directErrorData?.error?.message || retryResponse.statusText}`);
+                }
+                throw lastError;
+            }
 
             // If model is missing/unsupported, discover available models and retry once.
             if (directResponse.status === 404) {

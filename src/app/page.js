@@ -413,8 +413,14 @@ export default function Home() {
                       Cloud STT
                     </button>
                     <button
+                      onClick={() => setSttMode('gemini')}
+                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'gemini' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Gemini AI
+                    </button>
+                    <button
                       onClick={() => setSttMode('apple')}
-                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                      className={`flex-1 py-2 px-3 border-r border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
                     >
                       Apple Native
                     </button>
@@ -476,7 +482,11 @@ export default function Home() {
                       </p>
                       <button
                         onClick={() => {
-                          if (ipcRenderer) ipcRenderer.send('open-satellite-browser');
+                          if (ipcRenderer) {
+                            ipcRenderer.send('open-satellite-browser');
+                          } else {
+                            window.open('/satellite', '_blank');
+                          }
                         }}
                         className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[10px] font-bold transition-all shadow-lg"
                       >
@@ -657,96 +667,98 @@ export default function Home() {
             )}
           </section>
         </div>
-      </div>
+      </div >
 
       {/* Usage Modal */}
-      {showUsageModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-[#1e293b] border border-[#334155] rounded-[2rem] w-full max-w-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-8 border-b border-[#334155] flex items-center justify-between bg-[#0f172a]/50">
-              <div className="flex items-center gap-3">
-                <div className="bg-blue-600/20 p-2 rounded-lg">
-                  <Monitor className="w-5 h-5 text-blue-400" />
-                </div>
-                <div>
-                  <h3 className="text-xl font-bold text-white">Daily STT Usage</h3>
-                  <p className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Today: {usageStats?.date || '...'}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowUsageModal(false)}
-                className="p-2 hover:bg-slate-700 rounded-full transition-colors"
-              >
-                <div className="w-5 h-5 flex items-center justify-center text-slate-400">✕</div>
-              </button>
-            </div>
-
-            <div className="p-8">
-              {isLoadingUsage ? (
-                <div className="flex flex-col items-center justify-center py-20 space-y-4">
-                  <div className="w-8 h-8 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
-                  <p className="text-sm font-medium">Loading statistics...</p>
-                </div>
-              ) : usageStats && Object.keys(usageStats.usage).length > 0 ? (
-                <div className="space-y-6">
-                  <div className="overflow-hidden rounded-2xl border border-[#334155] bg-[#0f172a]/30">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-[#0f172a]/50">
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">API Key (Masked)</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">Usage</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">Progress</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {Object.entries(usageStats.usage).map(([key, seconds], idx) => {
-                          const percent = Math.min(100, (seconds / usageStats.limit) * 100);
-                          return (
-                            <tr key={idx} className="border-b border-[#334155]/50 last:border-0 hover:bg-white/5 transition-colors">
-                              <td className="px-6 py-5">
-                                <code className="text-blue-400 text-xs font-mono">{key}</code>
-                              </td>
-                              <td className="px-6 py-5">
-                                <span className="text-white font-bold">{formatDuration(seconds)}</span>
-                                <span className="text-slate-500 text-[10px] ml-1">/ {usageStats.limit / 3600}h</span>
-                              </td>
-                              <td className="px-6 py-5">
-                                <div className="w-32 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                                  <div
-                                    className={`h-full rounded-full transition-all duration-1000 ${percent > 90 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : percent > 50 ? 'bg-amber-500' : 'bg-blue-500'}`}
-                                    style={{ width: `${percent}%` }}
-                                  ></div>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+      {
+        showUsageModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-[#1e293b] border border-[#334155] rounded-[2rem] w-full max-w-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+              <div className="p-8 border-b border-[#334155] flex items-center justify-between bg-[#0f172a]/50">
+                <div className="flex items-center gap-3">
+                  <div className="bg-blue-600/20 p-2 rounded-lg">
+                    <Monitor className="w-5 h-5 text-blue-400" />
                   </div>
-                  <p className="text-[10px] text-slate-500 leading-relaxed text-center italic">
-                    Note: Usage is reset daily at 00:00 (server time). Limits are applied per API Key.
-                  </p>
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Daily STT Usage</h3>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Today: {usageStats?.date || '...'}</p>
+                  </div>
                 </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-20 bg-[#0f172a]/20 rounded-2xl border border-dashed border-[#334155]">
-                  <Monitor className="w-12 h-12 text-slate-700 mb-4" />
-                  <p className="text-slate-400 font-medium">No usage recorded for today yet.</p>
-                </div>
-              )}
-            </div>
+                <button
+                  onClick={() => setShowUsageModal(false)}
+                  className="p-2 hover:bg-slate-700 rounded-full transition-colors"
+                >
+                  <div className="w-5 h-5 flex items-center justify-center text-slate-400">✕</div>
+                </button>
+              </div>
 
-            <div className="p-8 bg-[#0f172a]/30 border-t border-[#334155] flex justify-end">
-              <button
-                onClick={() => setShowUsageModal(false)}
-                className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold text-xs transition-all border border-[#334155]"
-              >
-                Close
-              </button>
+              <div className="p-8">
+                {isLoadingUsage ? (
+                  <div className="flex flex-col items-center justify-center py-20 space-y-4">
+                    <div className="w-8 h-8 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
+                    <p className="text-sm font-medium">Loading statistics...</p>
+                  </div>
+                ) : usageStats && Object.keys(usageStats.usage).length > 0 ? (
+                  <div className="space-y-6">
+                    <div className="overflow-hidden rounded-2xl border border-[#334155] bg-[#0f172a]/30">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-[#0f172a]/50">
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">API Key (Masked)</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">Usage</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">Progress</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(usageStats.usage).map(([key, seconds], idx) => {
+                            const percent = Math.min(100, (seconds / usageStats.limit) * 100);
+                            return (
+                              <tr key={idx} className="border-b border-[#334155]/50 last:border-0 hover:bg-white/5 transition-colors">
+                                <td className="px-6 py-5">
+                                  <code className="text-blue-400 text-xs font-mono">{key}</code>
+                                </td>
+                                <td className="px-6 py-5">
+                                  <span className="text-white font-bold">{formatDuration(seconds)}</span>
+                                  <span className="text-slate-500 text-[10px] ml-1">/ {usageStats.limit / 3600}h</span>
+                                </td>
+                                <td className="px-6 py-5">
+                                  <div className="w-32 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-1000 ${percent > 90 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : percent > 50 ? 'bg-amber-500' : 'bg-blue-500'}`}
+                                      style={{ width: `${percent}%` }}
+                                    ></div>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed text-center italic">
+                      Note: Usage is reset daily at 00:00 (server time). Limits are applied per API Key.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-20 bg-[#0f172a]/20 rounded-2xl border border-dashed border-[#334155]">
+                    <Monitor className="w-12 h-12 text-slate-700 mb-4" />
+                    <p className="text-slate-400 font-medium">No usage recorded for today yet.</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-8 bg-[#0f172a]/30 border-t border-[#334155] flex justify-end">
+                <button
+                  onClick={() => setShowUsageModal(false)}
+                  className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold text-xs transition-all border border-[#334155]"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </main>
+        )
+      }
+    </main >
   );
 }
