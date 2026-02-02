@@ -221,9 +221,14 @@ export default function Home() {
 
   const startRecording = async () => {
     try {
-      if (sttMode === 'apple') {
+      if (sttMode === 'apple' || sttMode === 'satellite') {
         setSttError('');
-        startNativeSpeechRecognition();
+        if (sttMode === 'apple') {
+          startNativeSpeechRecognition();
+        } else {
+          // In satellite mode, we just show we're "recording" (listening for transcripts)
+          setIsRecording(true);
+        }
         return;
       }
 
@@ -374,6 +379,13 @@ export default function Home() {
     } finally {
       setIsLoadingUsage(false);
     }
+  };
+
+  const clearApiKeys = () => {
+    localStorage.removeItem('google_gemini_api_key');
+    localStorage.removeItem('google_cloud_stt_api_key');
+    setGeminiApiKey('');
+    setCloudApiKey('');
   };
 
   const formatDuration = (seconds) => {
@@ -530,16 +542,23 @@ export default function Home() {
                     </select>
                     <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                   </div>
-                  <div className="pt-2">
+                  <div className="pt-2 grid grid-cols-2 gap-2">
                     <button
                       onClick={() => {
                         fetchUsageStats();
                         setShowUsageModal(true);
                       }}
-                      className="w-full py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-blue-400 hover:border-blue-500/50 transition-all text-xs font-bold flex items-center justify-center gap-2"
+                      className="py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-blue-400 hover:border-blue-500/50 transition-all text-[10px] font-bold flex items-center justify-center gap-2"
                     >
                       <Monitor className="w-3.5 h-3.5" />
-                      View Daily Usage Stats
+                      Usage Stats
+                    </button>
+                    <button
+                      onClick={clearApiKeys}
+                      className="py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-red-400 hover:border-red-500/50 transition-all text-[10px] font-bold flex items-center justify-center gap-2"
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                      Clear Cache
                     </button>
                   </div>
                 </div>
