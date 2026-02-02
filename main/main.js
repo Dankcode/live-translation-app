@@ -65,8 +65,8 @@ function broadcastOverlayStatus() {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1000,
-    height: 850,
+    width: 1200,
+    height: 900,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
