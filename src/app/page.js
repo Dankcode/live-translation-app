@@ -414,18 +414,18 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-10 font-sans selection:bg-blue-500/30" suppressHydrationWarning>
-      <div className="max-w-6xl mx-auto">
-        <header className="flex items-center gap-3 mb-10">
+    <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-8 font-sans selection:bg-blue-500/30" suppressHydrationWarning>
+      <div className="max-w-[1300px] mx-auto">
+        <header className="flex items-center gap-3 mb-8">
           <div className="bg-[#2563eb] p-2 rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.4)]">
             <Languages className="w-8 h-8 text-white" />
           </div>
           <h1 className="text-3xl font-bold text-white tracking-tight">Scribe Center</h1>
         </header>
 
-        <div className="grid grid-cols-[450px_1fr] gap-10 items-start">
-          <div className="space-y-6">
-            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-8 rounded-3xl space-y-8 shadow-xl backdrop-blur-sm relative">
+        <div className="grid grid-cols-[400px_1fr] gap-8 items-start">
+          <div className="space-y-4">
+            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-5 shadow-xl backdrop-blur-sm relative">
               <div className="flex items-center gap-3 text-blue-400 mb-2">
                 <Monitor className="w-5 h-5" />
                 <h2 className="text-base font-bold uppercase tracking-widest">Configuration</h2>
@@ -436,32 +436,31 @@ export default function Home() {
                 <div className="space-y-3">
                   <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Recognition Engine</label>
                   <div className="flex bg-[#0f172a] p-1 rounded-xl border border-[#334155]">
-
+                    <button
+                      onClick={() => setSttMode('satellite')}
+                      className={`flex-1 py-2 px-3 rounded-l-lg text-[10px] font-bold transition-all ${sttMode === 'satellite' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      Satellite
+                    </button>
                     <button
                       onClick={() => setSttMode('cloud')}
-                      className={`flex-1 py-2 px-3 rounded-l-lg text-[10px] font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
                     >
                       Cloud STT
                     </button>
                     <button
                       onClick={() => setSttMode('gemini')}
                       disabled
-                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'gemini' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
+                      className={`flex-1 py-2 px-3 border-r border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'gemini' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
                     >
                       Gemini AI
                     </button>
                     <button
                       onClick={() => setSttMode('apple')}
                       disabled
-                      className={`flex-1 py-2 px-3 border-r border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
+                      className={`flex-1 py-2 px-3 rounded-r-lg text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
                     >
                       Apple Native
-                    </button>
-                    <button
-                      onClick={() => setSttMode('satellite')}
-                      className={`flex-1 py-2 px-3 rounded-r-lg text-[10px] font-bold transition-all ${sttMode === 'satellite' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
-                    >
-                      Satellite
                     </button>
                   </div>
                 </div>
@@ -586,7 +585,7 @@ export default function Home() {
               </div>
             </section>
 
-            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-8 rounded-3xl space-y-4 shadow-lg backdrop-blur-sm">
+            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-4 shadow-lg backdrop-blur-sm">
               <div className="flex items-center justify-between text-indigo-400">
                 <div className="flex items-center gap-3">
                   <Sparkles className="w-5 h-5" />
@@ -663,12 +662,12 @@ export default function Home() {
             </div>
           </div>
 
-          <section className="bg-[#1e293b]/20 border border-[#334155]/20 rounded-[2.5rem] p-12 flex flex-col min-h-[600px] shadow-2xl relative overflow-hidden group">
+          <section className="bg-[#1e293b]/20 border border-[#334155]/20 rounded-[2.5rem] p-8 flex flex-col min-h-[600px] shadow-2xl relative overflow-hidden group">
             <div className="absolute top-0 right-0 p-12 opacity-[0.03] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
               <Languages className="w-48 h-48" />
             </div>
 
-            <div className="flex items-center justify-between mb-10">
+            <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-bold text-white flex items-center gap-3">
                 <Languages className="w-5 h-5 text-indigo-400" /> Live Feedback
               </h2>
@@ -680,7 +679,7 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="space-y-6 flex-1 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar">
+            <div className="space-y-4 flex-1 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar">
               {transcriptHistory.length === 0 ? (
                 <div className="space-y-4">
                   <div className="p-4 rounded-xl bg-slate-800/20 border border-slate-700/30">
@@ -698,9 +697,9 @@ export default function Home() {
                 transcriptHistory.map((item, idx) => (
                   <div key={idx} className={`space-y-2 animate-in fade-in slide-in-from-bottom-2 duration-500 ${idx !== 0 ? 'opacity-40 grayscale-[0.5] scale-[0.98] origin-top' : ''}`}>
                     {/* Original Block */}
-                    <div className="p-3.5 rounded-xl bg-slate-800/40 border border-slate-700/50 relative group/block">
+                    <div className="p-3.5 pt-7 rounded-xl bg-slate-800/40 border border-slate-700/50 relative group/block">
                       {!item.isFinal && (
-                        <div className="absolute -top-1.5 -left-1.5 bg-blue-600 text-[7px] font-black uppercase px-1.5 py-0.5 rounded shadow-lg animate-pulse z-10">
+                        <div className="absolute top-2 left-2 bg-blue-600 text-[7px] font-black uppercase px-1.5 py-0.5 rounded shadow-lg animate-pulse z-10">
                           Live
                         </div>
                       )}
