@@ -424,7 +424,7 @@ export default function Home() {
           <h1 className="text-3xl font-bold text-white tracking-tight">Scribe Center</h1>
         </header>
 
-        <div className="grid grid-cols-[400px_1fr] gap-8 items-start">
+        <div className="grid grid-cols-[400px_1fr] gap-8 items-stretch">
           <div className="space-y-4">
             <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-5 shadow-xl backdrop-blur-sm relative">
               <div className="flex items-center gap-3 text-blue-400 mb-2">
@@ -663,7 +663,7 @@ export default function Home() {
             </div>
           </div>
 
-          <section className="bg-[#1e293b]/20 border border-[#334155]/20 rounded-[2.5rem] p-8 flex flex-col min-h-[600px] shadow-2xl relative overflow-hidden group">
+          <section className="bg-[#1e293b]/20 border border-[#334155]/20 rounded-[2.5rem] p-8 flex flex-col h-full shadow-2xl relative overflow-hidden group">
             <div className="absolute top-0 right-0 p-12 opacity-[0.03] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
               <Languages className="w-48 h-48" />
             </div>
@@ -680,7 +680,7 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="space-y-4 flex-1 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar">
+            <div className="space-y-4 flex-1 overflow-y-auto pr-2 custom-scrollbar">
               {transcriptHistory.length === 0 ? (
                 <div className="space-y-4">
                   <div className="p-4 rounded-xl bg-slate-800/20 border border-slate-700/30">
