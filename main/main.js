@@ -19,12 +19,12 @@ function startWebSocketServer() {
   console.log('Satellite WebSocket Server started on port 8080');
 
   wss.on('connection', (ws) => {
-    console.log('Satellite Browser connected');
+    console.log('Satellite Browser connected. Total clients:', wss.clients.size);
+    broadcastSatelliteStatus();
 
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message);
-        // Forward the transcription to the main window
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('satellite-transcript', data);
         }
@@ -34,9 +34,16 @@ function startWebSocketServer() {
     });
 
     ws.on('close', () => {
-      console.log('Satellite Browser disconnected');
+      console.log('Satellite Browser disconnected. Total clients:', wss.clients.size);
+      broadcastSatelliteStatus();
     });
   });
+}
+
+function broadcastSatelliteStatus() {
+  if (mainWindow && !mainWindow.isDestroyed() && wss) {
+    mainWindow.webContents.send('satellite-status', wss.clients.size > 0);
+  }
 }
 
 function checkMacSttBinary() {
@@ -138,6 +145,10 @@ ipcMain.on('toggle-overlay', (event) => {
 
 ipcMain.on('get-overlay-status', (event) => {
   event.reply('overlay-status', overlayWindow ? overlayWindow.isVisible() : false);
+});
+
+ipcMain.on('check-satellite-status', (event) => {
+  event.reply('satellite-status', wss.clients.size > 0);
 });
 
 ipcMain.on('broadcast-stt-command', (event, { command, config }) => {
