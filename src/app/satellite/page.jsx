@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import {
     Mic, MicOff, Terminal, ChevronDown, ChevronUp,
-    Activity, Globe, Zap, Settings, ShieldCheck
+    Globe, Zap, ShieldCheck
 } from 'lucide-react';
 
 /**
@@ -28,6 +28,60 @@ export default function SatellitePage() {
         const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
         console.log(`[Satellite Log ${time}]: ${msg}`);
         setLogs(prev => [{ time, msg }, ...prev].slice(0, 50)); // Keep last 50 logs, newest first
+    };
+
+    // --- Helper for Command Execution ---
+    const executeStart = (sourceLang) => {
+        const recognition = recognitionRef.current;
+        if (!recognition) return;
+
+        addLog(`Remote command: START [${sourceLang || 'auto'}]`);
+        window._shouldBeActive = true;
+
+        if (sourceLang) {
+            recognition.lang = sourceLang;
+        }
+
+        if (isRecognitionRunningRef.current) {
+            recognition.stop();
+        } else {
+            try {
+                recognition.start();
+            } catch (e) {
+                addLog(`Activation failed: ${e.message}`);
+            }
+        }
+    };
+
+    const executeStop = () => {
+        addLog("Remote command: STOP");
+        window._shouldBeActive = false;
+        if (isRecognitionRunningRef.current && recognitionRef.current) {
+            recognitionRef.current.stop();
+        }
+    };
+
+    const toggleRecording = () => {
+        const newActive = !isActive;
+        const command = newActive ? 'start' : 'stop';
+
+        // Send to main process
+        const payload = {
+            type: 'command',
+            command: command,
+            config: { sourceLang: recognitionRef.current?.lang }
+        };
+
+        if (ipc) {
+            ipc.send('satellite-command', payload);
+        } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify(payload));
+        }
+
+        // Local feedback (will be overridden by remote command if loopback exists, 
+        // but provides immediate UI feedback)
+        if (newActive) executeStart();
+        else executeStop();
     };
 
     useEffect(() => {
@@ -116,35 +170,7 @@ export default function SatellitePage() {
             }
         };
 
-        // --- 2. Helper for Command Execution ---
-        const executeStart = (sourceLang) => {
-            addLog(`Remote command: START [${sourceLang || 'auto'}]`);
-            window._shouldBeActive = true;
-
-            if (sourceLang) {
-                recognition.lang = sourceLang;
-            }
-
-            if (isRecognitionRunningRef.current) {
-                recognition.stop();
-            } else {
-                try {
-                    recognition.start();
-                } catch (e) {
-                    addLog(`Activation failed: ${e.message}`);
-                }
-            }
-        };
-
-        const executeStop = () => {
-            addLog("Remote command: STOP");
-            window._shouldBeActive = false;
-            if (isRecognitionRunningRef.current) {
-                recognition.stop();
-            }
-        };
-
-        // --- 3. Communication Handlers ---
+        // --- 2. Communication Handlers ---
         if (ipc) {
             const handleStart = (event, config) => executeStart(config?.sourceLang);
             const handleStop = () => executeStop();
@@ -166,7 +192,6 @@ export default function SatellitePage() {
             socket.onopen = () => {
                 addLog("Cloud Bridge connected.");
                 setStatus("Ready");
-                executeStart();
             };
 
             socket.onmessage = (event) => {
@@ -201,7 +226,7 @@ export default function SatellitePage() {
         <div className="min-h-screen bg-[#fafafa] dark:bg-[#18181b] text-[#18181b] dark:text-[#f4f4f5] font-sans flex flex-col items-center justify-center p-6 transition-colors duration-500">
             {/* Top Indicator */}
             <div className="fixed top-8 left-8 flex items-center gap-3">
-                <div className={`p-2 rounded-xl border ${isActive ? 'bg-teal-500/10 border-teal-500/20 text-teal-600 dark:text-teal-400' : 'bg-zinc-100 dark:bg-zinc-800 border-transparent text-zinc-400'}`}>
+                <div className={`p-2 rounded-xl border ${isActive ? 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400' : 'bg-zinc-100 dark:bg-zinc-800 border-transparent text-zinc-400'}`}>
                     <Globe className="w-5 h-5" />
                 </div>
                 <div className="flex flex-col">
@@ -214,37 +239,47 @@ export default function SatellitePage() {
             <div className="relative group flex flex-col items-center">
                 {/* Outer Glows */}
                 {isActive && (
-                    <div className="absolute inset-0 bg-teal-500/10 blur-[100px] rounded-full animate-pulse" />
+                    <div className="absolute inset-0 bg-red-500/10 blur-[100px] rounded-full animate-pulse" />
                 )}
 
                 {/* Animated Rings */}
-                <div className={`relative w-48 h-48 rounded-full flex items-center justify-center border transition-all duration-700 ${isActive ? 'border-teal-500/30 scale-110' : 'border-zinc-200 dark:border-zinc-800 scale-100'}`}>
+                <div className={`relative w-48 h-48 rounded-full flex items-center justify-center border transition-all duration-700 ${isActive ? 'border-red-500/30 scale-110' : 'border-zinc-200 dark:border-zinc-800 scale-100'}`}>
                     {isActive && (
-                        <div className="absolute inset-2 border border-teal-500/20 rounded-full animate-[spin_10s_linear_infinite]" />
+                        <div className="absolute inset-2 border border-red-500/20 rounded-full animate-[spin_10s_linear_infinite]" />
                     )}
 
                     {/* Inner Core */}
-                    <div className={`w-36 h-36 rounded-full flex flex-col items-center justify-center transition-all duration-500 shadow-2xl ${isActive ? 'bg-teal-500 text-white shadow-teal-500/20' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 shadow-none'}`}>
+                    <div className={`w-36 h-36 rounded-full flex flex-col items-center justify-center transition-all duration-500 shadow-2xl ${isActive ? 'bg-red-500 text-white shadow-red-500/20' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 shadow-none'}`}>
                         {isActive ? <Mic className="w-10 h-10 animate-bounce" /> : <MicOff className="w-10 h-10" />}
-                        <span className="mt-3 text-[10px] font-black uppercase tracking-widest">{status}</span>
+                        <span className="mt-3 text-[10px] font-black uppercase tracking-widest">{isActive ? 'Listening' : 'Ready'}</span>
                     </div>
 
                     {/* Wave Sprites */}
                     {isActive && (
                         <div className="absolute -bottom-4 right-0 left-0 flex items-center justify-center gap-1 h-8">
                             {[0, 0.1, 0.2, 0.3, 0.4].map((delay, i) => (
-                                <div key={i} className="w-1 h-4 bg-teal-500/40 rounded-full animate-wave" style={{ animationDelay: `${delay}s`, animationDuration: '0.8s' }} />
+                                <div key={i} className="w-1 h-4 bg-red-500/40 rounded-full animate-wave" style={{ animationDelay: `${delay}s`, animationDuration: '0.8s' }} />
                             ))}
                         </div>
                     )}
                 </div>
+
+                {/* Manual Control Button */}
+                <button
+                    onClick={toggleRecording}
+                    className={`mt-10 px-8 py-3 rounded-full font-bold text-xs uppercase tracking-[0.2em] transition-all duration-300 shadow-lg active:scale-95 ${isActive
+                        ? 'bg-red-500 text-white shadow-red-500/20'
+                        : 'bg-blue-600 text-white shadow-blue-500/20 hover:bg-blue-700'}`}
+                >
+                    {isActive ? 'Stop Translation' : 'Start Translation'}
+                </button>
             </div>
 
             {/* Controls & Footer */}
             <div className="mt-20 w-full max-w-sm space-y-4">
                 <button
                     onClick={() => setShowLogs(!showLogs)}
-                    className={`w-full py-4 px-6 rounded-2xl border flex items-center justify-between transition-all duration-300 group ${showLogs ? 'bg-teal-500/10 border-teal-500/20 text-teal-600 dark:text-teal-400' : 'bg-zinc-100 dark:bg-zinc-800 border-transparent text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
+                    className={`w-full py-4 px-6 rounded-2xl border flex items-center justify-between transition-all duration-300 group ${showLogs ? 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400' : 'bg-zinc-100 dark:bg-zinc-800 border-transparent text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
                 >
                     <div className="flex items-center gap-3">
                         <Terminal className="w-4 h-4" />
@@ -256,7 +291,7 @@ export default function SatellitePage() {
                 {showLogs && (
                     <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-2xl animate-in slide-in-from-top-4 duration-300">
                         <div className="flex items-center gap-2 mb-4">
-                            <Zap className="w-3 h-3 text-teal-400" />
+                            <Zap className="w-3 h-3 text-red-400" />
                             <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Debug Stream</span>
                         </div>
                         <div className="h-48 overflow-y-auto custom-scrollbar space-y-2 pr-2">

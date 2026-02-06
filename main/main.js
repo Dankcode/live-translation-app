@@ -25,7 +25,13 @@ function startWebSocketServer() {
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message.toString());
-        if (mainWindow && !mainWindow.isDestroyed()) {
+        if (data.type === 'command') {
+          // Forward command to all other clients and main window
+          broadcastSttCommand(data.command, data.config);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('satellite-command', data);
+          }
+        } else if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('satellite-transcript', data);
         }
       } catch (e) {
@@ -203,15 +209,7 @@ ipcMain.on('check-satellite-status', (event) => {
   event.reply('satellite-status', wss.clients.size > 0);
 });
 
-ipcMain.on('broadcast-stt-command', (event, { command, config }) => {
-  // 1. Send to Satellite Electron window (if any) via IPC
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    // Note: The satellite page might be in the overlay or a separate window.
-    // In our current structure, it's usually opened via open-satellite-browser.
-    // We don't track a specific 'satelliteWindow' variable, so we rely on WebSocket for browsers.
-  }
-
-  // 2. Broadcast to all WebSocket clients (Browser Satellite)
+function broadcastSttCommand(command, config) {
   if (wss) {
     const payload = JSON.stringify({ type: 'command', command, config });
     wss.clients.forEach((client) => {
@@ -219,6 +217,18 @@ ipcMain.on('broadcast-stt-command', (event, { command, config }) => {
         client.send(payload);
       }
     });
+  }
+}
+
+ipcMain.on('broadcast-stt-command', (event, { command, config }) => {
+  broadcastSttCommand(command, config);
+});
+
+ipcMain.on('satellite-command', (event, data) => {
+  // Command from IPC-connected satellite to everyone else
+  broadcastSttCommand(data.command, data.config);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('satellite-command', data);
   }
 });
 

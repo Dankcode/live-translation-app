@@ -107,16 +107,16 @@ export default function Home() {
     sourceLangRef.current = sourceLang;
   }, [isRecording, targetLang, llmModel, sourceLang]);
 
-  // Satellite Language Sync
+  // Satellite Sync (Initial & Language)
   useEffect(() => {
-    if (isRecording && sttMode === 'satellite' && ipcRenderer) {
-      console.log(`[Main] Broadcasting language update: ${sourceLang}`);
+    if (isRecording && sttMode === 'satellite' && satelliteReady && ipcRenderer) {
+      console.log(`[Main] Syncing satellite state: START [${sourceLang}]`);
       ipcRenderer.send('broadcast-stt-command', {
         command: 'start',
         config: { sourceLang, targetLang, llmModel }
       });
     }
-  }, [sourceLang]);
+  }, [sourceLang, satelliteReady, isRecording, sttMode]);
 
   // Auto-stop recording on STT mode switch
   useEffect(() => {
@@ -183,6 +183,16 @@ export default function Home() {
                 });
               }
             });
+        }
+      });
+      ipcRenderer.on('satellite-command', (event, data) => {
+        console.log(`[Main] Received command from satellite: ${data.command}`);
+        if (data.command === 'start') {
+          setIsRecording(true);
+        } else if (data.command === 'stop') {
+          // Note: we call stopRecording to ensure cleanup, but avoid loopback if needed
+          // Actually, stopRecording will send a stop command back, which is fine (idempotent)
+          stopRecording();
         }
       });
     }
