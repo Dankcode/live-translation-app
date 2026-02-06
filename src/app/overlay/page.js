@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { X, Sparkles, GripVertical, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
+import { X, Settings, Sparkles, GripVertical, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
 
 const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
 
@@ -11,14 +11,28 @@ export default function OverlayPage() {
     const [isClickThrough, setIsClickThrough] = useState(false);
     const [isResizing, setIsResizing] = useState(false);
     const [hasMounted, setHasMounted] = useState(false);
+    const [panelAlpha, setPanelAlpha] = useState(0.75); // 0..1, background opacity
+    const [showSettings, setShowSettings] = useState(false);
     const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
     const scrollContainerRef = useRef(null);
+    const settingsPopoverRef = useRef(null);
+    const settingsButtonRef = useRef(null);
 
     useEffect(() => {
         // Add class to body and html for transparency
         document.body.classList.add('bg-transparent-window');
         document.documentElement.classList.add('bg-transparent-window');
         setHasMounted(true);
+
+        try {
+            const saved = localStorage.getItem('overlay_panel_alpha');
+            if (saved != null) {
+                const value = Number(saved);
+                if (!Number.isNaN(value)) setPanelAlpha(Math.min(0.95, Math.max(0.15, value)));
+            }
+        } catch {
+            // ignore
+        }
 
         if (ipcRenderer) {
             ipcRenderer.send('set-ignore-mouse', false);
@@ -49,6 +63,19 @@ export default function OverlayPage() {
             };
         }
     }, []);
+
+    useEffect(() => {
+        if (!showSettings) return;
+        const onMouseDown = (e) => {
+            const pop = settingsPopoverRef.current;
+            const btn = settingsButtonRef.current;
+            if (!pop || !btn) return;
+            if (pop.contains(e.target) || btn.contains(e.target)) return;
+            setShowSettings(false);
+        };
+        window.addEventListener('mousedown', onMouseDown);
+        return () => window.removeEventListener('mousedown', onMouseDown);
+    }, [showSettings]);
 
     const handleClose = () => {
         if (ipcRenderer) ipcRenderer.send('close-overlay');
@@ -113,29 +140,51 @@ export default function OverlayPage() {
         }
     };
 
+    const handlePanelAlphaChange = (value) => {
+        const next = Math.min(0.95, Math.max(0.15, Number(value)));
+        setPanelAlpha(next);
+        try {
+            localStorage.setItem('overlay_panel_alpha', String(next));
+        } catch {
+            // ignore
+        }
+    };
+
     if (!hasMounted) return null;
 
     return (
         <div className={`flex flex-col items-center justify-center h-full w-full p-2 group overflow-hidden transition-all duration-700 ${isClickThrough ? 'pointer-events-none' : ''}`}>
             <div
-                className={`relative bg-black/70 backdrop-blur-3xl rounded-3xl p-8 border-2 
-                    opacity-10 group-hover:opacity-100
-                    ${isClickThrough ? 'border-transparent' : 'border-white/20 group-hover:border-white/40'} 
+                className={`relative backdrop-blur-3xl rounded-3xl p-8 border-2
+                    ${isClickThrough ? 'border-transparent' : 'border-white/30 hover:border-white/45'}
                     shadow-[0_20px_60px_rgba(0,0,0,0.8)] max-w-[95%] w-full h-full text-center 
                     transform overflow-visible pointer-events-auto flex flex-col
                     transition-all duration-500
-                    ${isResizing ? 'transition-none scale-100 opacity-100' : 'scale-100 group-hover:scale-[1.01]'}`}
-                style={{ WebkitAppRegion: isResizing ? 'none' : (isClickThrough ? 'none' : 'drag') }}
+                    ${isResizing ? 'transition-none scale-100' : 'scale-100 group-hover:scale-[1.01]'}`}
+                style={{
+                    WebkitAppRegion: isResizing ? 'none' : (isClickThrough ? 'none' : 'drag'),
+                    backgroundColor: `rgba(0,0,0,${panelAlpha})`,
+                }}
             >
                 {/* Top-Right Close Button */}
                 {!isClickThrough && (
-                    <button
-                        onClick={handleClose}
-                        className="absolute top-4 right-4 p-2 bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 rounded-xl transition-all duration-300 no-drag z-50 group/close opacity-0 group-hover:opacity-100"
-                        title="Close Overlay"
-                    >
-                        <X className="w-5 h-5" />
-                    </button>
+                    <div className="absolute top-4 right-4 flex items-center gap-2 no-drag z-50">
+                        <button
+                            ref={settingsButtonRef}
+                            onClick={() => setShowSettings((v) => !v)}
+                            className="p-2 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-xl transition-all duration-300"
+                            title="Overlay Settings"
+                        >
+                            <Settings className="w-5 h-5" />
+                        </button>
+                        <button
+                            onClick={handleClose}
+                            className="p-2 bg-white/5 hover:bg-red-500/20 text-white/60 hover:text-red-300 rounded-xl transition-all duration-300"
+                            title="Close Overlay"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
                 )}
 
                 {/* Top-Left Anchor Handle */}
@@ -145,23 +194,63 @@ export default function OverlayPage() {
                     </div>
                 )}
 
-                {/* Control Bar (Visible on hover) */}
-                <div className="absolute -top-12 left-1/2 -translate-x-1/2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity no-drag p-2 bg-slate-900/80 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl">
-                    <button onClick={() => handleResize('small')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Small</button>
-                    <button onClick={() => handleResize('medium')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Med</button>
-                    <button onClick={() => handleResize('large')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Large</button>
-                    <div className="w-px h-4 bg-white/10 mx-1" />
-                    <button
-                        onClick={toggleClickThrough}
-                        className={`p-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${isClickThrough ? 'bg-teal-600 text-white' : 'hover:bg-white/10 text-slate-400'}`}
+                {/* Settings Popover */}
+                {!isClickThrough && showSettings && (
+                    <div
+                        ref={settingsPopoverRef}
+                        className="absolute top-16 right-4 w-[320px] max-w-[90vw] bg-slate-900/90 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl p-4 text-left no-drag z-50"
+                        style={{ WebkitAppRegion: 'no-drag' }}
                     >
-                        {isClickThrough ? <Sparkles className="w-3 h-3" /> : null} Mouse Lock
-                    </button>
-                    <div className="w-px h-4 bg-white/10 mx-1" />
-                    <button onClick={handleClose} className="p-2 hover:bg-red-500/20 text-red-400 hover:text-red-300 rounded-xl transition-colors">
-                        <X className="w-4 h-4" />
-                    </button>
-                </div>
+                        <div className="flex items-center justify-between mb-3">
+                            <div className="text-xs font-black uppercase tracking-widest text-white/70">Overlay Settings</div>
+                            <button
+                                onClick={() => setShowSettings(false)}
+                                className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+                                title="Close Settings"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+
+                        <div className="space-y-4">
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">Opacity</span>
+                                    <span className="text-[10px] font-bold tabular-nums text-slate-400">{Math.round(panelAlpha * 100)}%</span>
+                                </div>
+                                <input
+                                    className="overlay-range w-full"
+                                    type="range"
+                                    min="0.15"
+                                    max="0.95"
+                                    step="0.02"
+                                    value={panelAlpha}
+                                    onChange={(e) => handlePanelAlphaChange(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">Size</span>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={() => handleResize('small')} className="flex-1 p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-300 hover:text-white transition-colors">Small</button>
+                                    <button onClick={() => handleResize('medium')} className="flex-1 p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-300 hover:text-white transition-colors">Med</button>
+                                    <button onClick={() => handleResize('large')} className="flex-1 p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-300 hover:text-white transition-colors">Large</button>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">Mouse Lock</span>
+                                <button
+                                    onClick={toggleClickThrough}
+                                    className={`px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${isClickThrough ? 'bg-teal-600 text-white' : 'hover:bg-white/10 text-slate-300 hover:text-white'}`}
+                                >
+                                    {isClickThrough ? <Sparkles className="w-3 h-3" /> : null}
+                                    {isClickThrough ? 'Locked' : 'Unlocked'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 <div
                     ref={scrollContainerRef}
@@ -171,23 +260,23 @@ export default function OverlayPage() {
                         <p className="text-white/40 text-xl font-bold italic tracking-tight select-none animate-pulse">
                             Waiting for input...
                         </p>
-                    ) : (
-                        subtitleHistory.slice(0, 2).map((sub, idx) => (
-                            <div key={idx} className={`space-y-2 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
-                                {/* Original Transcription - TOP */}
-                                <p className={`text-white leading-tight tracking-tight drop-shadow-2xl select-none break-words font-extrabold ${idx === 0 ? 'text-3xl' : 'text-xl'}`}>
-                                    {sub.original}
-                                </p>
+	                    ) : (
+	                        subtitleHistory.slice(0, 2).map((sub, idx) => (
+	                            <div key={idx} className={`space-y-2 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
+	                                {/* Original Transcription - TOP */}
+	                                <p className={`text-white/70 leading-tight tracking-tight drop-shadow-2xl select-none break-words font-bold ${idx === 0 ? 'text-xl' : 'text-base'}`}>
+	                                    {sub.original}
+	                                </p>
 
-                                {/* Translation - BOTTOM */}
-                                {sub.translated && (
-                                    <p className={`text-teal-300 font-bold italic select-none break-words leading-relaxed ${idx === 0 ? 'text-xl opacity-90' : 'text-base opacity-60'}`}>
-                                        {sub.translated}
-                                    </p>
-                                )}
-                            </div>
-                        ))
-                    )}
+	                                {/* Translation - BOTTOM */}
+	                                {sub.translated && (
+	                                    <p className={`text-teal-200 font-extrabold select-none break-words leading-tight ${idx === 0 ? 'text-3xl' : 'text-xl'}`}>
+	                                        {sub.translated}
+	                                    </p>
+	                                )}
+	                            </div>
+	                        ))
+	                    )}
                 </div>
 
                 {!isClickThrough && (
@@ -262,6 +351,32 @@ export default function OverlayPage() {
                 }
                 .no-drag {
                     -webkit-app-region: no-drag;
+                }
+                .overlay-range {
+                    -webkit-appearance: none;
+                    appearance: none;
+                    height: 6px;
+                    border-radius: 999px;
+                    background: rgba(255, 255, 255, 0.18);
+                    outline: none;
+                }
+                .overlay-range::-webkit-slider-thumb {
+                    -webkit-appearance: none;
+                    appearance: none;
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 999px;
+                    background: rgba(45, 212, 191, 1);
+                    border: 2px solid rgba(255, 255, 255, 0.75);
+                    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+                }
+                .overlay-range::-moz-range-thumb {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 999px;
+                    background: rgba(45, 212, 191, 1);
+                    border: 2px solid rgba(255, 255, 255, 0.75);
+                    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
                 }
             `}</style>
         </div>
