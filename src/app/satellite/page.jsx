@@ -1,15 +1,20 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import {
+    Mic, MicOff, Terminal, ChevronDown, ChevronUp,
+    Activity, Globe, Zap, Settings, ShieldCheck
+} from 'lucide-react';
 
 /**
  * Satellite Page Component
  * Handles the browser's native Web Speech API (Free STT) and sends data back to Electron via WebSocket or IPC.
  */
 export default function SatellitePage() {
-    const [status, setStatus] = useState('Idle - Waiting for Command');
+    const [status, setStatus] = useState('Standby');
     const [isActive, setIsActive] = useState(false);
-    const [logs, setLogs] = useState(['Engine initialized...']);
+    const [logs, setLogs] = useState([]);
+    const [showLogs, setShowLogs] = useState(false);
     const recognitionRef = useRef(null);
     const wsRef = useRef(null);
     const isRecognitionRunningRef = useRef(false);
@@ -20,8 +25,9 @@ export default function SatellitePage() {
         : null;
 
     const addLog = (msg) => {
-        console.log(`[Satellite Log]: ${msg}`);
-        setLogs(prev => [...prev.slice(-20), msg]); // Keep last 20 logs
+        const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        console.log(`[Satellite Log ${time}]: ${msg}`);
+        setLogs(prev => [{ time, msg }, ...prev].slice(0, 50)); // Keep last 50 logs, newest first
     };
 
     useEffect(() => {
@@ -30,7 +36,7 @@ export default function SatellitePage() {
 
         if (!SpeechRecognition) {
             addLog("Error: Web Speech API not supported.");
-            setStatus("Not Supported");
+            setStatus("Incompatible Browser");
             return;
         }
 
@@ -40,8 +46,8 @@ export default function SatellitePage() {
         recognition.interimResults = true;
 
         recognition.onstart = () => {
-            addLog("Microphone listening...");
-            setStatus("Listening...");
+            addLog("Audio stream initialized.");
+            setStatus("Listening");
             setIsActive(true);
             isRecognitionRunningRef.current = true;
         };
@@ -61,11 +67,8 @@ export default function SatellitePage() {
             const text = finalTranscript || interimTranscript;
             if (text && text.trim()) {
                 const isFinal = finalTranscript !== '';
-                // To reduce noise, only log final results or when a significant interim chunk is added
                 if (isFinal) {
-                    addLog(`Final: ${text}`);
-                } else if (text.length % 10 === 0) { // Very basic throttle for interim logs
-                    addLog(`Detecting: ${text.substring(0, 30)}...`);
+                    addLog(`Final Segment: "${text}"`);
                 }
 
                 const payload = {
@@ -75,7 +78,7 @@ export default function SatellitePage() {
                 };
 
                 if (ipc) {
-                    ipc.send('send-subtitle', payload);
+                    ipc.send('satellite-data', payload);
                 } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                     wsRef.current.send(JSON.stringify(payload));
                 }
@@ -83,61 +86,65 @@ export default function SatellitePage() {
         };
 
         recognition.onerror = (event) => {
-            addLog(`Error: ${event.error}`);
+            if (event.error === 'no-speech') return; // Suppress no-speech
+            addLog(`Recognition error: ${event.error}`);
             if (event.error === 'not-allowed') {
-                setStatus("Mic Blocked");
+                setStatus("Access Denied");
             }
         };
 
         recognition.onend = () => {
-            addLog("Recognition stream ended.");
             isRecognitionRunningRef.current = false;
 
             // Auto-restart if we're supposed to be active (prevents timeouts)
             if (window._shouldBeActive) {
-                addLog("Attempting auto-restart...");
-                try {
-                    recognition.start();
-                } catch (e) {
-                    addLog(`Restart failed: ${e.message}`);
-                }
+                addLog("Stream timed out, auto-restarting...");
+                // Brief delay to ensure clean state
+                setTimeout(() => {
+                    if (window._shouldBeActive && !isRecognitionRunningRef.current) {
+                        try {
+                            recognition.start();
+                        } catch (e) {
+                            addLog(`Auto-restart failed: ${e.message}`);
+                        }
+                    }
+                }, 200);
             } else {
-                setStatus("Idle");
+                addLog("Audio stream closed.");
+                setStatus("Standby");
                 setIsActive(false);
             }
         };
 
         // --- 2. Helper for Command Execution ---
         const executeStart = (sourceLang) => {
-            addLog(`Execute Start (Lang: ${sourceLang || 'default'})`);
+            addLog(`Remote command: START [${sourceLang || 'auto'}]`);
             window._shouldBeActive = true;
 
-            // Update language
             if (sourceLang) {
                 recognition.lang = sourceLang;
             }
 
             if (isRecognitionRunningRef.current) {
-                addLog("Already running, restarting to apply language...");
-                recognition.stop(); // onend will catch window._shouldBeActive = true and restart
+                recognition.stop();
             } else {
                 try {
                     recognition.start();
                 } catch (e) {
-                    addLog(`Start failed: ${e.message}`);
+                    addLog(`Activation failed: ${e.message}`);
                 }
             }
         };
 
         const executeStop = () => {
-            addLog("Execute Stop");
+            addLog("Remote command: STOP");
             window._shouldBeActive = false;
             if (isRecognitionRunningRef.current) {
                 recognition.stop();
             }
         };
 
-        // --- 3. Communication Handlers (IPC or WebSocket) ---
+        // --- 3. Communication Handlers ---
         if (ipc) {
             const handleStart = (event, config) => executeStart(config?.sourceLang);
             const handleStop = () => executeStop();
@@ -145,7 +152,7 @@ export default function SatellitePage() {
             ipc.on('start-stt', handleStart);
             ipc.on('stop-stt', handleStop);
 
-            addLog("Electron IPC Listeners initialized.");
+            addLog("Secure IPC Bridge established.");
 
             return () => {
                 ipc.removeListener('start-stt', handleStart);
@@ -153,14 +160,12 @@ export default function SatellitePage() {
                 recognition.stop();
             };
         } else {
-            // Standalone Browser Mode
             const socket = new WebSocket('ws://localhost:8080');
             wsRef.current = socket;
 
             socket.onopen = () => {
-                addLog("Connected to Electron via WebSocket.");
-                setStatus("Connected - Ready");
-                // Initial start in browser mode
+                addLog("Cloud Bridge connected.");
+                setStatus("Ready");
                 executeStart();
             };
 
@@ -169,20 +174,18 @@ export default function SatellitePage() {
                     const data = JSON.parse(event.data);
                     if (data.type === 'command') {
                         if (data.command === 'start') {
-                            addLog(`Remote Command: START received (${data.config?.sourceLang || 'auto'})`);
                             executeStart(data.config?.sourceLang);
                         } else if (data.command === 'stop') {
-                            addLog("Remote Command: STOP received");
                             executeStop();
                         }
                     }
                 } catch (e) {
-                    addLog("Failed to parse remote command.");
+                    addLog("Command parsing failed.");
                 }
             };
 
             socket.onclose = () => {
-                addLog("Disconnected from Electron.");
+                addLog("Cloud Bridge offline.");
                 setStatus("Disconnected");
                 executeStop();
             };
@@ -195,56 +198,104 @@ export default function SatellitePage() {
     }, [ipc]);
 
     return (
-        <div className="min-h-screen bg-[#0a0f1c] text-slate-300 font-sans flex items-center justify-center p-6">
-            <div className="max-w-md w-full bg-[#1e293b] border border-[#334155] rounded-3xl p-8 shadow-2xl text-center">
-                <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 transition-all duration-500 ${isActive ? 'bg-blue-600/20 text-blue-400' : 'bg-slate-800 text-slate-500'}`}>
-                    <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="32"
-                        height="32"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                        <line x1="12" x2="12" y1="19" y2="22" />
-                    </svg>
+        <div className="min-h-screen bg-[#fafafa] dark:bg-[#18181b] text-[#18181b] dark:text-[#f4f4f5] font-sans flex flex-col items-center justify-center p-6 transition-colors duration-500">
+            {/* Top Indicator */}
+            <div className="fixed top-8 left-8 flex items-center gap-3">
+                <div className={`p-2 rounded-xl border ${isActive ? 'bg-teal-500/10 border-teal-500/20 text-teal-600 dark:text-teal-400' : 'bg-zinc-100 dark:bg-zinc-800 border-transparent text-zinc-400'}`}>
+                    <Globe className="w-5 h-5" />
                 </div>
-
-                <h1 className="text-white text-xl font-bold mb-2">Satellite Engine</h1>
-                <p className={`text-sm mb-8 uppercase tracking-widest font-black ${isActive ? 'text-blue-400' : 'text-slate-500'}`}>
-                    {status}
-                </p>
-
-                {isActive && (
-                    <div className="flex items-center justify-center gap-1 h-8 mb-8">
-                        <div className="w-1 h-4 bg-blue-500 rounded-full animate-bounce"></div>
-                        <div className="w-1 h-6 bg-blue-400 rounded-full animate-bounce [animation-delay:0.1s]"></div>
-                        <div className="w-1 h-8 bg-blue-300 rounded-full animate-bounce [animation-delay:0.2s]"></div>
-                        <div className="w-1 h-6 bg-blue-400 rounded-full animate-bounce [animation-delay:0.3s]"></div>
-                        <div className="w-1 h-4 bg-blue-500 rounded-full animate-bounce [animation-delay:0.4s]"></div>
-                    </div>
-                )}
-
-                <div className="bg-[#0f172a] rounded-2xl p-4 text-left border border-[#334155]">
-                    <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-tighter">Live Debug Feed</span>
-                    <div className="text-[11px] font-mono mt-2 h-32 overflow-y-auto text-slate-400 space-y-1">
-                        {logs.map((log, i) => (
-                            <div key={i}>{`> ${log}`}</div>
-                        ))}
-                    </div>
+                <div className="flex flex-col">
+                    <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">Satellite Node</span>
+                    <span className="text-xs font-bold font-mono">NODE_8080_ACTIVE</span>
                 </div>
-
-                {!ipc && (
-                    <p className="mt-4 text-[10px] text-yellow-500/50">
-                        Connected via WebSocket (Browser Mode)
-                    </p>
-                )}
             </div>
+
+            {/* Main Visual Core */}
+            <div className="relative group flex flex-col items-center">
+                {/* Outer Glows */}
+                {isActive && (
+                    <div className="absolute inset-0 bg-teal-500/10 blur-[100px] rounded-full animate-pulse" />
+                )}
+
+                {/* Animated Rings */}
+                <div className={`relative w-48 h-48 rounded-full flex items-center justify-center border transition-all duration-700 ${isActive ? 'border-teal-500/30 scale-110' : 'border-zinc-200 dark:border-zinc-800 scale-100'}`}>
+                    {isActive && (
+                        <div className="absolute inset-2 border border-teal-500/20 rounded-full animate-[spin_10s_linear_infinite]" />
+                    )}
+
+                    {/* Inner Core */}
+                    <div className={`w-36 h-36 rounded-full flex flex-col items-center justify-center transition-all duration-500 shadow-2xl ${isActive ? 'bg-teal-500 text-white shadow-teal-500/20' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 shadow-none'}`}>
+                        {isActive ? <Mic className="w-10 h-10 animate-bounce" /> : <MicOff className="w-10 h-10" />}
+                        <span className="mt-3 text-[10px] font-black uppercase tracking-widest">{status}</span>
+                    </div>
+
+                    {/* Wave Sprites */}
+                    {isActive && (
+                        <div className="absolute -bottom-4 right-0 left-0 flex items-center justify-center gap-1 h-8">
+                            {[0, 0.1, 0.2, 0.3, 0.4].map((delay, i) => (
+                                <div key={i} className="w-1 h-4 bg-teal-500/40 rounded-full animate-wave" style={{ animationDelay: `${delay}s`, animationDuration: '0.8s' }} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Controls & Footer */}
+            <div className="mt-20 w-full max-w-sm space-y-4">
+                <button
+                    onClick={() => setShowLogs(!showLogs)}
+                    className={`w-full py-4 px-6 rounded-2xl border flex items-center justify-between transition-all duration-300 group ${showLogs ? 'bg-teal-500/10 border-teal-500/20 text-teal-600 dark:text-teal-400' : 'bg-zinc-100 dark:bg-zinc-800 border-transparent text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
+                >
+                    <div className="flex items-center gap-3">
+                        <Terminal className="w-4 h-4" />
+                        <span className="text-xs font-bold uppercase tracking-widest">Live System Logs</span>
+                    </div>
+                    {showLogs ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" />}
+                </button>
+
+                {showLogs && (
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-2xl animate-in slide-in-from-top-4 duration-300">
+                        <div className="flex items-center gap-2 mb-4">
+                            <Zap className="w-3 h-3 text-teal-400" />
+                            <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Debug Stream</span>
+                        </div>
+                        <div className="h-48 overflow-y-auto custom-scrollbar space-y-2 pr-2">
+                            {logs.length === 0 ? (
+                                <div className="h-full flex items-center justify-center text-zinc-700 text-[10px] italic">No logs generated yet...</div>
+                            ) : (
+                                logs.map((log, i) => (
+                                    <div key={i} className="flex gap-3 text-[11px] font-mono leading-relaxed border-l border-zinc-800 pl-3">
+                                        <span className="text-zinc-600 shrink-0">{log.time}</span>
+                                        <span className="text-zinc-300">{log.msg}</span>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                <div className="flex items-center justify-center gap-6 pt-4 text-zinc-400 dark:text-zinc-600">
+                    <div className="flex items-center gap-2">
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        <span className="text-[10px] font-bold uppercase tracking-tighter">Secure Engine</span>
+                    </div>
+                    <div className="w-1 h-1 bg-zinc-300 dark:bg-zinc-700 rounded-full" />
+                    <div className="flex items-center gap-2">
+                        <Zap className="w-3.5 h-3.5" />
+                        <span className="text-[10px] font-bold uppercase tracking-tighter">Low Latency</span>
+                    </div>
+                </div>
+            </div>
+
+            <style jsx global>{`
+                @keyframes wave {
+                    0%, 100% { transform: scaleY(0.5); }
+                    50% { transform: scaleY(1.5); }
+                }
+                .custom-scrollbar::-webkit-scrollbar { width: 3px; }
+                .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+                .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
+            `}</style>
         </div>
     );
 }

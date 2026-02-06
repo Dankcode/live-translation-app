@@ -116,20 +116,22 @@ export default function OverlayPage() {
     if (!hasMounted) return null;
 
     return (
-        <div className={`flex flex-col items-center justify-center h-full w-full p-2 group overflow-hidden transition-all duration-500 hover:bg-slate-900/5 ${isClickThrough ? 'pointer-events-none' : ''}`}>
+        <div className={`flex flex-col items-center justify-center h-full w-full p-2 group overflow-hidden transition-all duration-700 ${isClickThrough ? 'pointer-events-none' : ''}`}>
             <div
                 className={`relative bg-black/70 backdrop-blur-3xl rounded-3xl p-8 border-2 
+                    opacity-10 group-hover:opacity-100
                     ${isClickThrough ? 'border-transparent' : 'border-white/20 group-hover:border-white/40'} 
                     shadow-[0_20px_60px_rgba(0,0,0,0.8)] max-w-[95%] w-full h-full text-center 
                     transform overflow-visible pointer-events-auto flex flex-col
-                    ${isResizing ? 'transition-none scale-100' : 'transition-all duration-300 scale-100 group-hover:scale-[1.01]'}`}
+                    transition-all duration-500
+                    ${isResizing ? 'transition-none scale-100 opacity-100' : 'scale-100 group-hover:scale-[1.01]'}`}
                 style={{ WebkitAppRegion: isResizing ? 'none' : (isClickThrough ? 'none' : 'drag') }}
             >
                 {/* Top-Right Close Button */}
                 {!isClickThrough && (
                     <button
                         onClick={handleClose}
-                        className="absolute top-4 right-4 p-2 bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 rounded-xl transition-all duration-300 no-drag z-50 group/close"
+                        className="absolute top-4 right-4 p-2 bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 rounded-xl transition-all duration-300 no-drag z-50 group/close opacity-0 group-hover:opacity-100"
                         title="Close Overlay"
                     >
                         <X className="w-5 h-5" />
@@ -138,7 +140,7 @@ export default function OverlayPage() {
 
                 {/* Top-Left Anchor Handle */}
                 {!isClickThrough && (
-                    <div className="absolute -top-3 -left-3 bg-blue-600 p-1.5 rounded-lg shadow-xl cursor-grab active:cursor-grabbing hover:scale-110 transition-transform">
+                    <div className="absolute -top-3 -left-3 bg-teal-600 p-1.5 rounded-lg shadow-xl cursor-grab active:cursor-grabbing hover:scale-110 transition-all opacity-0 group-hover:opacity-100">
                         <GripVertical className="w-5 h-5 text-white" />
                     </div>
                 )}
@@ -151,7 +153,7 @@ export default function OverlayPage() {
                     <div className="w-px h-4 bg-white/10 mx-1" />
                     <button
                         onClick={toggleClickThrough}
-                        className={`p-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${isClickThrough ? 'bg-indigo-600 text-white' : 'hover:bg-white/10 text-slate-400'}`}
+                        className={`p-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${isClickThrough ? 'bg-teal-600 text-white' : 'hover:bg-white/10 text-slate-400'}`}
                     >
                         {isClickThrough ? <Sparkles className="w-3 h-3" /> : null} Mouse Lock
                     </button>
@@ -170,14 +172,17 @@ export default function OverlayPage() {
                             Waiting for input...
                         </p>
                     ) : (
-                        subtitleHistory.map((sub, idx) => (
-                            <div key={idx} className={`space-y-1 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
-                                <p className={`text-white leading-tight tracking-tight drop-shadow-2xl select-none break-words font-extrabold ${idx === 0 ? 'text-2xl' : 'text-lg'}`}>
-                                    {sub.translated || sub.original}
+                        subtitleHistory.slice(0, 2).map((sub, idx) => (
+                            <div key={idx} className={`space-y-2 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
+                                {/* Original Transcription - TOP */}
+                                <p className={`text-white leading-tight tracking-tight drop-shadow-2xl select-none break-words font-extrabold ${idx === 0 ? 'text-3xl' : 'text-xl'}`}>
+                                    {sub.original}
                                 </p>
-                                {sub.translated && sub.original && (
-                                    <p className="text-blue-300 text-xs font-bold italic select-none opacity-60">
-                                        {sub.original}
+
+                                {/* Translation - BOTTOM */}
+                                {sub.translated && (
+                                    <p className={`text-teal-300 font-bold italic select-none break-words leading-relaxed ${idx === 0 ? 'text-xl opacity-90' : 'text-base opacity-60'}`}>
+                                        {sub.translated}
                                     </p>
                                 )}
                             </div>
@@ -188,7 +193,7 @@ export default function OverlayPage() {
                 {!isClickThrough && (
                     <div
                         onMouseDown={handleResizeMouseDown}
-                        className="absolute -bottom-3 -right-3 bg-indigo-600 p-1.5 rounded-lg shadow-xl cursor-nwse-resize hover:scale-110 transition-transform no-drag z-50"
+                        className="absolute -bottom-3 -right-3 bg-teal-600 p-1.5 rounded-lg shadow-xl cursor-nwse-resize hover:scale-110 transition-all no-drag z-50 opacity-0 group-hover:opacity-100"
                     >
                         <Maximize2 className="w-5 h-5 text-white" />
                     </div>
@@ -197,7 +202,7 @@ export default function OverlayPage() {
                 {/* Manual Scroll Controls */}
                 {!isClickThrough && !isEmpty && (
                     <>
-                        <div className="absolute right-12 top-12 opacity-60 hover:opacity-100 transition-opacity no-drag z-50">
+                        <div className="absolute right-12 top-12 opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity no-drag z-50">
                             <button
                                 onClick={() => handleManualScroll('up')}
                                 className="p-3 transition-all bg-slate-800/80 hover:bg-slate-700 text-white/50 hover:text-white rounded-2xl border border-white/10 shadow-2xl backdrop-blur-xl scale-90 hover:scale-110 active:scale-95"
@@ -206,7 +211,7 @@ export default function OverlayPage() {
                                 <ChevronUp className="w-6 h-6" />
                             </button>
                         </div>
-                        <div className="absolute right-12 bottom-12 opacity-60 hover:opacity-100 transition-opacity no-drag z-50">
+                        <div className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity no-drag z-50">
                             <button
                                 onClick={() => handleManualScroll('down')}
                                 className="p-3 transition-all bg-slate-800/80 hover:bg-slate-700 text-white/50 hover:text-white rounded-2xl border border-white/10 shadow-2xl backdrop-blur-xl scale-90 hover:scale-110 active:scale-95"
@@ -219,7 +224,7 @@ export default function OverlayPage() {
                 )}
 
                 {!isClickThrough && !isEmpty && (
-                    <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-blue-600/80 text-white text-[9px] px-3 py-1 rounded-full font-bold uppercase tracking-widest shadow-lg opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-md">
+                    <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-teal-600/80 text-white text-[9px] px-3 py-1 rounded-full font-bold uppercase tracking-widest shadow-lg opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-md">
                         Drag to reposition
                     </div>
                 )}
