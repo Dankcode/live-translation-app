@@ -24,7 +24,7 @@ function startWebSocketServer() {
 
     ws.on('message', (message) => {
       try {
-        const data = JSON.parse(message);
+        const data = JSON.parse(message.toString());
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('satellite-transcript', data);
         }
@@ -190,8 +190,17 @@ ipcMain.on('set-ignore-mouse', (event, ignore) => {
   }
 });
 
+ipcMain.on('satellite-data', (event, data) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('satellite-transcript', data);
+  }
+});
+
 ipcMain.on('send-subtitle', (event, data) => {
-  if (overlayWindow) overlayWindow.webContents.send('receive-subtitle', data);
+  // Only send to overlay for display
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('receive-subtitle', data);
+  }
 });
 
 ipcMain.on('open-external-browser', (event, url) => {

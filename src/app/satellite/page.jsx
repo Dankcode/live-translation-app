@@ -78,7 +78,7 @@ export default function SatellitePage() {
                 };
 
                 if (ipc) {
-                    ipc.send('send-subtitle', payload);
+                    ipc.send('satellite-data', payload);
                 } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                     wsRef.current.send(JSON.stringify(payload));
                 }
@@ -98,11 +98,17 @@ export default function SatellitePage() {
 
             // Auto-restart if we're supposed to be active (prevents timeouts)
             if (window._shouldBeActive) {
-                try {
-                    recognition.start();
-                } catch (e) {
-                    addLog(`Auto-restart failed: ${e.message}`);
-                }
+                addLog("Stream timed out, auto-restarting...");
+                // Brief delay to ensure clean state
+                setTimeout(() => {
+                    if (window._shouldBeActive && !isRecognitionRunningRef.current) {
+                        try {
+                            recognition.start();
+                        } catch (e) {
+                            addLog(`Auto-restart failed: ${e.message}`);
+                        }
+                    }
+                }, 200);
             } else {
                 addLog("Audio stream closed.");
                 setStatus("Standby");

@@ -126,7 +126,6 @@ export default function Home() {
     }
   }, [sttMode]);
 
-  // STT & Transcripts
   useEffect(() => {
     if (ipcRenderer) {
       ipcRenderer.on('satellite-transcript', async (event, data) => {
@@ -135,23 +134,39 @@ export default function Home() {
         if (!original || !original.trim()) return;
 
         const now = Date.now();
-        const shouldTriggerInterim = !data.isFinal &&
-          (original.length > lastInterimRef.current.length + 25 || now > lastInterimRef.current.time + 1500);
+        const isFinal = data.isFinal;
 
+        // 1. Decoupled State Update (Instant UI)
         setTranscriptHistory(prev => {
           let newHistory = [...prev];
           if (newHistory.length > 0 && !newHistory[0].isFinal) {
-            newHistory[0] = { ...newHistory[0], original, isFinal: data.isFinal };
+            newHistory[0] = { ...newHistory[0], original, isFinal };
           } else {
-            newHistory.unshift({ original, translated: '', isFinal: data.isFinal });
+            newHistory.unshift({ original, translated: '', isFinal });
           }
           newHistory = newHistory.slice(0, transcriptLimit);
           setTranscript({ original, translated: newHistory[0].translated || '...' });
-          if (ipcRenderer) ipcRenderer.send('send-subtitle', newHistory);
           return newHistory;
         });
 
-        if (shouldTriggerInterim) {
+        // 2. Asynchronous Translation Logic
+        const shouldTriggerInterim = !isFinal &&
+          (original.length > lastInterimRef.current.length + 25 || now > lastInterimRef.current.time + 1500);
+
+        if (isFinal) {
+          lastInterimRef.current = { time: 0, length: 0, requestId: 0 };
+          translateText(original, sourceLangRef.current.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey)
+            .then(translated => {
+              setTranscriptHistory(prev => {
+                const newHistory = prev.map(item => (item.original === original && item.isFinal) ? { ...item, translated } : item);
+                if (newHistory.length > 0 && newHistory[0].original === original) {
+                  setTranscript({ original, translated });
+                  if (ipcRenderer) ipcRenderer.send('send-subtitle', newHistory);
+                }
+                return newHistory;
+              });
+            });
+        } else if (shouldTriggerInterim) {
           const requestId = ++lastInterimRef.current.requestId;
           lastInterimRef.current = { time: now, length: original.length, requestId };
           translateText(original, sourceLangRef.current.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey)
@@ -168,19 +183,6 @@ export default function Home() {
                 });
               }
             });
-        }
-
-        if (data.isFinal) {
-          lastInterimRef.current = { time: 0, length: 0, requestId: 0 };
-          const translated = await translateText(original, sourceLangRef.current.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey);
-          setTranscriptHistory(prev => {
-            const newHistory = prev.map(item => (item.original === original && item.isFinal) ? { ...item, translated } : item);
-            if (newHistory.length > 0 && newHistory[0].original === original) {
-              setTranscript({ original, translated });
-            }
-            if (ipcRenderer) ipcRenderer.send('send-subtitle', newHistory);
-            return newHistory;
-          });
         }
       });
     }
@@ -553,14 +555,23 @@ export default function Home() {
                     ? 'bg-bg-input border border-border-color shadow-sm'
                     : 'opacity-50 grayscale'
                     }`}>
-                    {/* Original */}
-                    <p className="text-xs font-bold text-text-muted uppercase tracking-wider mb-2 opacity-70">
-                      {item.original}
-                    </p>
-                    {/* Translated */}
-                    <p className={`font-bold leading-relaxed text-text-main ${idx === 0 ? 'text-xl' : 'text-base'}`}>
-                      {item.translated || (item.isFinal ? 'Translating...' : '...')}
-                    </p>
+                    <div className="flex flex-col gap-4">
+                      {/* Original */}
+                      <div>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-accent-primary opacity-60 block mb-1">Transcription</span>
+                        <p className="text-base font-bold text-text-main leading-relaxed">
+                          {item.original}
+                        </p>
+                      </div>
+
+                      {/* Translated */}
+                      <div className={`pt-3 border-t border-border-color/50 ${!item.translated && !item.isFinal ? 'hidden' : ''}`}>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-teal-500 opacity-60 block mb-1">Translation</span>
+                        <p className={`font-bold leading-relaxed text-text-main ${idx === 0 ? 'text-xl' : 'text-base'}`}>
+                          {item.translated || (item.isFinal ? 'Translating...' : '...')}
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 ))
               )}

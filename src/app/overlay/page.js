@@ -173,13 +173,16 @@ export default function OverlayPage() {
                         </p>
                     ) : (
                         subtitleHistory.slice(0, 2).map((sub, idx) => (
-                            <div key={idx} className={`space-y-1 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
-                                <p className={`text-white leading-tight tracking-tight drop-shadow-2xl select-none break-words font-extrabold ${idx === 0 ? 'text-2xl' : 'text-lg'}`}>
-                                    {sub.translated || sub.original}
+                            <div key={idx} className={`space-y-2 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
+                                {/* Original Transcription - TOP */}
+                                <p className={`text-white leading-tight tracking-tight drop-shadow-2xl select-none break-words font-extrabold ${idx === 0 ? 'text-3xl' : 'text-xl'}`}>
+                                    {sub.original}
                                 </p>
-                                {sub.translated && sub.original && (
-                                    <p className="text-teal-300 text-xs font-bold italic select-none opacity-60">
-                                        {sub.original}
+
+                                {/* Translation - BOTTOM */}
+                                {sub.translated && (
+                                    <p className={`text-teal-300 font-bold italic select-none break-words leading-relaxed ${idx === 0 ? 'text-xl opacity-90' : 'text-base opacity-60'}`}>
+                                        {sub.translated}
                                     </p>
                                 )}
                             </div>
