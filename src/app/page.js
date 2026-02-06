@@ -1,32 +1,47 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { Mic, MicOff, Settings, Monitor, Languages, Sparkles, ChevronDown, Key, History } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import {
+  Mic, MicOff, Monitor, Languages, Sparkles, ChevronDown,
+  Key, History, Moon, Sun, X, Settings, GripHorizontal,
+  Globe, Cloud, Cpu, Command
+} from 'lucide-react';
 import { translateText } from '@/lib/translator';
 
-const { ipcRenderer } = (typeof window !== 'undefined' && typeof window.require === 'function') ? window.require('electron') : { ipcRenderer: null };
+const { ipcRenderer } = (typeof window !== 'undefined' && typeof window.require === 'function')
+  ? window.require('electron')
+  : { ipcRenderer: null };
 
 export default function Home() {
+  // --- State ---
   const [isRecording, setIsRecording] = useState(false);
   const [sourceLang, setSourceLang] = useState('en-US');
   const [targetLang, setTargetLang] = useState('es');
   const [transcriptLimit, setTranscriptLimit] = useState(50);
   const [transcript, setTranscript] = useState({ original: '', translated: '' });
-  const [transcriptHistory, setTranscriptHistory] = useState([]); // List of {original, translated, isFinal}
+  const [transcriptHistory, setTranscriptHistory] = useState([]);
   const [overlayVisible, setOverlayVisible] = useState(false);
   const [llmModel, setLlmModel] = useState('none');
   const [hasMounted, setHasMounted] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [cloudApiKey, setCloudApiKey] = useState('');
-  const [sttMode, setSttMode] = useState('satellite'); // 'gemini' or 'cloud'
+  const [sttMode, setSttMode] = useState('satellite');
   const [sttError, setSttError] = useState('');
-  const [showUsageModal, setShowUsageModal] = useState(false);
+  const [satelliteReady, setSatelliteReady] = useState(false);
+
+  // Settings Modal State
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('general'); // 'general', 'usage'
+
   const [usageStats, setUsageStats] = useState(null);
   const [isLoadingUsage, setIsLoadingUsage] = useState(false);
   const [isOverlayLocked, setIsOverlayLocked] = useState(false);
 
+  // Theme State
+  const [theme, setTheme] = useState('light');
+
+  // --- Refs ---
   const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
   const isRecordingRef = useRef(false);
   const targetLangRef = useRef(targetLang);
   const llmModelRef = useRef(llmModel);
@@ -35,33 +50,56 @@ export default function Home() {
   const sourceLangRef = useRef(sourceLang);
   const lastInterimRef = useRef({ time: 0, length: 0, requestId: 0 });
 
+  // --- Effects ---
+
+  // Mount & Theme
   useEffect(() => {
     setHasMounted(true);
-    // Load saved keys
     const savedGemini = localStorage.getItem('google_gemini_api_key');
     const savedCloud = localStorage.getItem('google_cloud_stt_api_key');
+    const savedTheme = localStorage.getItem('app_theme') || 'light';
+
     if (savedGemini) setGeminiApiKey(savedGemini);
     if (savedCloud) setCloudApiKey(savedCloud);
+    setTheme(savedTheme);
 
-    // Listen for overlay status sync
     if (ipcRenderer) {
-      ipcRenderer.on('overlay-status', (event, visible) => {
-        setOverlayVisible(visible);
-      });
-      ipcRenderer.on('overlay-lock-status', (event, locked) => {
-        setIsOverlayLocked(locked);
-      });
-      // Initial status check
+      // Listeners
+      ipcRenderer.on('overlay-status', (event, visible) => setOverlayVisible(visible));
+      ipcRenderer.on('overlay-lock-status', (event, locked) => setIsOverlayLocked(locked));
+      ipcRenderer.on('satellite-status', (event, isReady) => setSatelliteReady(isReady));
+
+      // Initial Checks
       ipcRenderer.send('get-overlay-status');
+      ipcRenderer.send('check-satellite-status');
+
+      // Poll Satellite Status every 2s
+      const pollInterval = setInterval(() => {
+        ipcRenderer.send('check-satellite-status');
+      }, 2000);
+
+      return () => clearInterval(pollInterval);
     }
   }, []);
 
+
+  // Theme Application
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    localStorage.setItem('app_theme', theme);
+  }, [theme]);
+
+  // Save Keys
   useEffect(() => {
     localStorage.setItem('google_gemini_api_key', geminiApiKey);
     localStorage.setItem('google_cloud_stt_api_key', cloudApiKey);
   }, [geminiApiKey, cloudApiKey]);
 
-  // Sync refs with state
+  // Sync Refs
   useEffect(() => {
     isRecordingRef.current = isRecording;
     targetLangRef.current = targetLang;
@@ -69,100 +107,88 @@ export default function Home() {
     sourceLangRef.current = sourceLang;
   }, [isRecording, targetLang, llmModel, sourceLang]);
 
+  // Satellite Language Sync
+  useEffect(() => {
+    if (isRecording && sttMode === 'satellite' && ipcRenderer) {
+      console.log(`[Main] Broadcasting language update: ${sourceLang}`);
+      ipcRenderer.send('broadcast-stt-command', {
+        command: 'start',
+        config: { sourceLang, targetLang, llmModel }
+      });
+    }
+  }, [sourceLang]);
+
+  // Auto-stop recording on STT mode switch
+  useEffect(() => {
+    if (isRecordingRef.current) {
+      console.log(`[Main] STT Mode changed to ${sttMode}, stopping recording...`);
+      stopRecording();
+    }
+  }, [sttMode]);
+
   useEffect(() => {
     if (ipcRenderer) {
-      ipcRenderer.on('overlay-status', (event, status) => {
-        setOverlayVisible(status);
-      });
       ipcRenderer.on('satellite-transcript', async (event, data) => {
         if (!isRecordingRef.current) return;
-        console.log('[Satellite Transcript Received]:', data);
         const original = data.transcript;
         if (!original || !original.trim()) return;
 
         const now = Date.now();
-        const shouldTriggerInterim = !data.isFinal &&
-          (original.length > lastInterimRef.current.length + 25 || now > lastInterimRef.current.time + 1500);
+        const isFinal = data.isFinal;
 
-        // 1. Update History & Overlay (Immediate feedback)
+        // 1. Decoupled State Update (Instant UI)
         setTranscriptHistory(prev => {
           let newHistory = [...prev];
-
-          // Check if we should update the current segment or start a new one
           if (newHistory.length > 0 && !newHistory[0].isFinal) {
-            newHistory[0] = { ...newHistory[0], original, isFinal: data.isFinal };
+            newHistory[0] = { ...newHistory[0], original, isFinal };
           } else {
-            newHistory.unshift({ original, translated: '', isFinal: data.isFinal });
+            newHistory.unshift({ original, translated: '', isFinal });
           }
-
-          newHistory = newHistory.slice(0, transcriptLimit); // Keep last N segments
-
-          // Synchronize main UI single transcript state
+          newHistory = newHistory.slice(0, transcriptLimit);
           setTranscript({ original, translated: newHistory[0].translated || '...' });
-
-          if (ipcRenderer) ipcRenderer.send('send-subtitle', newHistory);
           return newHistory;
         });
 
-        // 2. Process Interim Translation (if threshold met)
-        if (shouldTriggerInterim) {
-          const requestId = ++lastInterimRef.current.requestId;
-          lastInterimRef.current = { time: now, length: original.length, requestId };
+        // 2. Asynchronous Translation Logic
+        const shouldTriggerInterim = !isFinal &&
+          (original.length > lastInterimRef.current.length + 25 || now > lastInterimRef.current.time + 1500);
 
-          translateText(
-            original,
-            sourceLangRef.current.split('-')[0],
-            targetLangRef.current,
-            llmModelRef.current,
-            geminiApiKey
-          ).then(translated => {
-            // Only update if this is still the latest request for the current segment
-            if (requestId === lastInterimRef.current.requestId) {
+        if (isFinal) {
+          lastInterimRef.current = { time: 0, length: 0, requestId: 0 };
+          translateText(original, sourceLangRef.current.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey)
+            .then(translated => {
               setTranscriptHistory(prev => {
-                const newHistory = [...prev];
-                if (newHistory.length > 0 && !newHistory[0].isFinal) {
-                  newHistory[0] = { ...newHistory[0], translated };
-                  setTranscript({ original: newHistory[0].original, translated });
+                const newHistory = prev.map(item => (item.original === original && item.isFinal) ? { ...item, translated } : item);
+                if (newHistory.length > 0 && newHistory[0].original === original) {
+                  setTranscript({ original, translated });
                   if (ipcRenderer) ipcRenderer.send('send-subtitle', newHistory);
                 }
                 return newHistory;
               });
-            }
-          });
-        }
-
-        // 3. Process Final Translation
-        if (data.isFinal) {
-          // Reset interim tracking
-          lastInterimRef.current = { time: 0, length: 0, requestId: 0 };
-
-          const translated = await translateText(
-            original,
-            sourceLangRef.current.split('-')[0],
-            targetLangRef.current,
-            llmModelRef.current,
-            geminiApiKey
-          );
-
-          setTranscriptHistory(prev => {
-            const newHistory = prev.map(item =>
-              (item.original === original && item.isFinal) ? { ...item, translated } : item
-            );
-
-            // Update main UI state if this is the latest final
-            if (newHistory.length > 0 && newHistory[0].original === original) {
-              setTranscript({ original, translated });
-            }
-
-            if (ipcRenderer) ipcRenderer.send('send-subtitle', newHistory);
-            return newHistory;
-          });
+            });
+        } else if (shouldTriggerInterim) {
+          const requestId = ++lastInterimRef.current.requestId;
+          lastInterimRef.current = { time: now, length: original.length, requestId };
+          translateText(original, sourceLangRef.current.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey)
+            .then(translated => {
+              if (requestId === lastInterimRef.current.requestId) {
+                setTranscriptHistory(prev => {
+                  const newHistory = [...prev];
+                  if (newHistory.length > 0 && !newHistory[0].isFinal) {
+                    newHistory[0] = { ...newHistory[0], translated };
+                    setTranscript({ original: newHistory[0].original, translated });
+                    if (ipcRenderer) ipcRenderer.send('send-subtitle', newHistory);
+                  }
+                  return newHistory;
+                });
+              }
+            });
         }
       });
-      ipcRenderer.send('get-overlay-status');
     }
-  }, []);
+  }, [transcriptLimit]);
 
+  // --- Functions ---
   const processAudio = async (blob) => {
     try {
       const reader = new FileReader();
@@ -170,373 +196,262 @@ export default function Home() {
       reader.onloadend = async () => {
         try {
           const base64Audio = reader.result.split(',')[1];
-
-          // Use the selected engine's API Key
           const currentKey = sttMode === 'cloud' ? cloudApiKey : geminiApiKey;
 
           const response = await fetch('/api/stt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              audio: base64Audio,
-              languageCode: sourceLang,
-              apiKey: currentKey,
-              sttMode: sttMode
-            })
+            body: JSON.stringify({ audio: base64Audio, languageCode: sourceLang, apiKey: currentKey, sttMode })
           });
-
           const data = await response.json();
           if (!response.ok || data.error) {
-            const retryAfterSeconds = typeof data.retryAfterSeconds === 'number' ? data.retryAfterSeconds : null;
-            const message = retryAfterSeconds != null
-              ? `${data.error || `STT request failed (${response.status})`} Please retry in ${Math.ceil(retryAfterSeconds)}s.`
-              : (data.error || `STT request failed (${response.status})`);
-            setSttError(message);
-            console.error('[STT Client Error]:', message);
+            setSttError(data.error || 'STT Failed');
             if (response.status === 429) stopRecording();
             return;
           }
           setSttError('');
           const original = data.transcript;
-          if (!original || !original.trim()) return;
-          const translated = await translateText(
-            original,
-            sourceLang.split('-')[0],
-            targetLangRef.current,
-            llmModelRef.current,
-            geminiApiKey
-          );
+          if (!original?.trim()) return;
 
+          const translated = await translateText(original, sourceLang.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey);
           const result = { original, translated, isFinal: true, timestamp: Date.now() };
+
           setTranscript(result);
           setTranscriptHistory(prev => [result, ...prev].slice(0, transcriptLimit));
           if (ipcRenderer) ipcRenderer.send('send-subtitle', [result]);
         } catch (error) {
-          console.error('Audio processing failed:', error);
-          setSttError(error?.message || 'Audio processing failed');
+          setSttError(error?.message);
         }
       };
-    } catch (error) {
-      console.error('Audio processing failed:', error);
-    }
+    } catch (e) { console.error(e); }
   };
 
   const startRecording = async () => {
     try {
-      if (sttMode === 'apple' || sttMode === 'satellite') {
-        setSttError('');
-        if (sttMode === 'apple') {
-          startNativeSpeechRecognition();
-        } else {
-          // In satellite mode, we just show we're "recording" (listening for transcripts)
-          if (ipcRenderer) {
-            ipcRenderer.send('broadcast-stt-command', {
-              command: 'start',
-              config: { sourceLang, targetLang, llmModel }
-            });
-          }
-          setIsRecording(true);
+      if (sttMode === 'satellite') {
+        if (!satelliteReady) {
+          setSttError('Satellite not connected. Launch Satellite Browser first.');
+          return;
         }
+        setSttError('');
+        if (ipcRenderer) ipcRenderer.send('broadcast-stt-command', { command: 'start', config: { sourceLang, targetLang, llmModel } });
+        setIsRecording(true);
+        return;
+      }
+
+      if (sttMode === 'apple') {
+        setSttError('');
+        startNativeSpeechRecognition();
         return;
       }
 
       const requiredKey = sttMode === 'cloud' ? cloudApiKey : geminiApiKey;
-      if (!requiredKey) {
-        setSttError(sttMode === 'cloud' ? 'Please enter a Google Cloud STT API key.' : 'Please enter a Gemini API key.');
-        return;
-      }
-      setSttError('');
+      if (!requiredKey) { setSttError('API Key Required'); return; }
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          processAudio(event.data);
-        }
-      };
-
-      // Record in intervals of 4 seconds for better flow
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) processAudio(e.data); };
       mediaRecorder.start();
       setIsRecording(true);
-
       recordingIntervalRef.current = setInterval(() => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        if (mediaRecorderRef.current?.state === 'recording') {
           mediaRecorderRef.current.stop();
           mediaRecorderRef.current.start();
         }
       }, 4000);
-
-    } catch (err) {
-      console.error('Failed to start recording:', err);
-      setSttError(err?.message || 'Failed to start recording');
-      setIsRecording(false);
-    }
+    } catch (err) { setSttError(err.message); setIsRecording(false); }
   };
 
   const stopRecording = () => {
-    if (sttMode === 'apple') {
-      stopNativeSpeechRecognition();
-    }
-
-    if (sttMode === 'satellite' && ipcRenderer) {
-      ipcRenderer.send('broadcast-stt-command', { command: 'stop' });
-    }
-
+    if (sttMode === 'apple') stopNativeSpeechRecognition();
+    if (sttMode === 'satellite' && ipcRenderer) ipcRenderer.send('broadcast-stt-command', { command: 'stop' });
     if (mediaRecorderRef.current) {
       mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
     }
-    if (recordingIntervalRef.current) {
-      clearInterval(recordingIntervalRef.current);
-    }
+    if (recordingIntervalRef.current) clearInterval(recordingIntervalRef.current);
     setIsRecording(false);
   };
 
   const startNativeSpeechRecognition = () => {
-    if (ipcRenderer) {
-      // In Electron, use our native bridge
-      ipcRenderer.send('start-mac-stt', { locale: sourceLang });
-      setIsRecording(true);
-      return;
-    }
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setSttError('Native Speech Recognition is not supported in this browser.');
-      setIsRecording(false);
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.lang = sourceLang;
-
-    recognition.onresult = async (event) => {
-      const last = event.results.length - 1;
-      const original = event.results[last][0].transcript;
-
+    if (ipcRenderer) { ipcRenderer.send('start-mac-stt', { locale: sourceLang }); setIsRecording(true); return; }
+    // Fallback for browser
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR();
+    rec.continuous = true; rec.interimResults = false; rec.lang = sourceLang;
+    rec.onresult = async (e) => {
+      const original = e.results[e.results.length - 1][0].transcript;
       if (original) {
-        const translated = await translateText(
-          original,
-          sourceLang.split('-')[0],
-          targetLangRef.current,
-          llmModelRef.current,
-          geminiApiKey
-        );
-
+        const translated = await translateText(original, sourceLang.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey);
         const result = { original, translated };
         setTranscript(result);
         if (ipcRenderer) ipcRenderer.send('send-subtitle', result);
       }
     };
-
-    recognition.onerror = (event) => {
-      console.error('Speech recognition error:', event.error);
-      if (event.error !== 'no-speech') {
-        setSttError(`Recognition error: ${event.error}`);
-        stopRecording();
-      }
-    };
-
-    recognition.onend = () => {
-      // Restart if still recording and in apple mode
-      if (isRecordingRef.current && sttMode === 'apple') {
-        try {
-          recognition.start();
-        } catch (e) {
-          console.error('Failed to restart recognition:', e);
-        }
-      }
-    };
-
-    recognitionRef.current = recognition;
-    recognition.start();
-    setIsRecording(true);
+    rec.onend = () => { if (isRecordingRef.current && sttMode === 'apple') rec.start(); };
+    recognitionRef.current = rec; rec.start(); setIsRecording(true);
   };
 
   const stopNativeSpeechRecognition = () => {
-    if (ipcRenderer) {
-      ipcRenderer.send('stop-mac-stt');
-      setIsRecording(false);
-    }
-    if (recognitionRef.current) {
-      recognitionRef.current.onend = null; // Prevent restart
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
+    if (ipcRenderer) ipcRenderer.send('stop-mac-stt');
+    if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.stop(); }
   };
 
-  const toggleRecording = () => {
-    if (isRecording) {
-      stopRecording();
-    } else {
-      startRecording();
-    }
-  };
-
-  const toggleOverlay = () => {
-    if (ipcRenderer) ipcRenderer.send('toggle-overlay');
-  };
+  const toggleRecording = () => isRecording ? stopRecording() : startRecording();
+  const toggleOverlay = () => ipcRenderer?.send('toggle-overlay');
 
   const fetchUsageStats = async () => {
     setIsLoadingUsage(true);
     try {
-      const response = await fetch('/api/usage');
-      const data = await response.json();
-      setUsageStats(data);
-    } catch (error) {
-      console.error('Failed to fetch usage stats:', error);
-    } finally {
-      setIsLoadingUsage(false);
-    }
-  };
-
-  const clearApiKeys = () => {
-    localStorage.removeItem('google_gemini_api_key');
-    localStorage.removeItem('google_cloud_stt_api_key');
-    setGeminiApiKey('');
-    setCloudApiKey('');
+      const res = await fetch('/api/usage');
+      setUsageStats(await res.json());
+    } finally { setIsLoadingUsage(false); }
   };
 
   const clearTranscript = () => {
     setTranscript({ original: '', translated: '' });
     setTranscriptHistory([]);
-    if (ipcRenderer) {
-      ipcRenderer.send('send-subtitle', []);
-    }
+    ipcRenderer?.send('send-subtitle', []);
   };
 
-  const formatDuration = (seconds) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  const launchSatellite = () => {
+    if (ipcRenderer) ipcRenderer.send('open-satellite-browser');
+    else window.open('/satellite', '_blank');
   };
 
+  // --- Render ---
   return (
-    <main className="min-h-screen bg-[#0a0f1c] text-[#94a3b8] p-8 font-sans selection:bg-blue-500/30" suppressHydrationWarning>
-      <div className="max-w-[1300px] mx-auto">
-        <header className="flex items-center gap-3 mb-8">
-          <div className="bg-[#2563eb] p-2 rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.4)]">
-            <Languages className="w-8 h-8 text-white" />
+    <main className="min-h-screen bg-bg-main text-text-main font-sans selection:bg-accent-primary/20 transition-colors duration-300">
+      <div className="max-w-6xl mx-auto p-6 h-screen flex flex-col">
+        {/* Header */}
+        <header className="flex items-center justify-between mb-6 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-xl text-white shadow-lg transition-colors duration-300 ${isRecording ? 'bg-red-500 shadow-red-500/30' : 'bg-accent-primary shadow-custom'}`}>
+              <Languages className="w-6 h-6" />
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight">Scribe Center</h1>
           </div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">Scribe Center</h1>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowSettingsModal(true)}
+              className="p-2.5 rounded-full hover:bg-bg-hover text-text-muted hover:text-text-main transition-all"
+              title="Settings"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
         </header>
 
-        <div className="grid grid-cols-[400px_1fr] gap-8 items-stretch">
-          <div className="space-y-4">
-            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-5 shadow-xl backdrop-blur-sm relative">
-              <div className="flex items-center gap-3 text-blue-400 mb-2">
-                <Monitor className="w-5 h-5" />
-                <h2 className="text-base font-bold uppercase tracking-widest">Configuration</h2>
+        {/* Main Grid */}
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6 min-h-0">
+
+          {/* Left Panel: Configuration */}
+          <div className="flex flex-col gap-4 overflow-y-auto pr-1">
+            <section className="bg-bg-card border border-border-color p-5 rounded-3xl shadow-sm space-y-6">
+
+              {/* Engine Selection Tabs */}
+              <div>
+                <div className="flex items-center gap-2 mb-3 px-1">
+                  <Monitor className="w-4 h-4 text-accent-primary" />
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted">Speech Engine</h3>
+                </div>
+                <div className="bg-bg-input p-1 rounded-xl flex">
+                  {[
+                    { id: 'satellite', icon: Globe, label: 'Satellite' },
+                    { id: 'cloud', icon: Cloud, label: 'Cloud' },
+                    { id: 'gemini', icon: Sparkles, label: 'Gemini' },
+                    { id: 'apple', icon: Command, label: 'Native' }
+                  ].map(engine => (
+                    <button
+                      key={engine.id}
+                      onClick={() => setSttMode(engine.id)}
+                      className={`flex-1 flex flex-col items-center justify-center py-2 px-1 rounded-lg gap-1 transition-all ${sttMode === engine.id
+                        ? 'bg-bg-card text-accent-primary shadow-sm font-bold'
+                        : 'text-text-muted hover:text-text-main hover:bg-bg-hover'
+                        }`}
+                    >
+                      <engine.icon className="w-4 h-4" />
+                      <span className="text-[9px] uppercase tracking-wider">{engine.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="space-y-6">
-                {/* STT Mode Toggle */}
-                <div className="space-y-3">
-                  <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Recognition Engine</label>
-                  <div className="flex bg-[#0f172a] p-1 rounded-xl border border-[#334155]">
-                    <button
-                      onClick={() => setSttMode('satellite')}
-                      className={`flex-1 py-2 px-3 rounded-l-lg text-[10px] font-bold transition-all ${sttMode === 'satellite' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
-                    >
-                      Satellite
-                    </button>
-                    <button
-                      onClick={() => setSttMode('cloud')}
-                      className={`flex-1 py-2 px-3 border-x border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'cloud' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
-                    >
-                      Cloud STT
-                    </button>
-                    <button
-                      onClick={() => setSttMode('gemini')}
-                      disabled
-                      className={`flex-1 py-2 px-3 border-r border-[#334155] text-[10px] font-bold transition-all ${sttMode === 'gemini' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
-                    >
-                      Gemini AI
-                    </button>
-                    <button
-                      onClick={() => setSttMode('apple')}
-                      disabled
-                      className={`flex-1 py-2 px-3 rounded-r-lg text-[10px] font-bold transition-all ${sttMode === 'apple' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 cursor-not-allowed opacity-50'}`}
-                    >
-                      Apple Native
-                    </button>
+              {/* Engine Description & Config */}
+              <div className="bg-bg-input/50 rounded-xl p-4 border border-border-color/50 min-h-[120px]">
+                {sttMode === 'satellite' && (
+                  <div className="space-y-3 animate-in fade-in slide-in-from-left-1">
+                    <p className="text-xs text-text-muted leading-relaxed">
+                      <strong className="text-text-main">Web Speech API (Free)</strong>.
+                      Runs in a separate browser window. Best for unlimited free transcription.
+                    </p>
+                    <div className="flex items-center justify-between bg-bg-card p-3 rounded-lg border border-border-color">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2 h-2 rounded-full ${satelliteReady ? 'bg-green-500' : 'bg-red-400 animate-pulse'}`} />
+                        <span className="text-xs font-bold text-text-muted">{satelliteReady ? 'Connected' : 'Disconnected'}</span>
+                      </div>
+                      {!satelliteReady && (
+                        <button onClick={launchSatellite} className="text-[10px] font-bold text-accent-primary hover:underline">
+                          Launch Now
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
+                {sttMode === 'cloud' && (
+                  <div className="space-y-3 animate-in fade-in slide-in-from-left-1">
+                    <p className="text-xs text-text-muted leading-relaxed">
+                      <strong className="text-text-main">Google Cloud STT (Paid)</strong>.
+                      Enterprise-grade accuracy. Requires a billing-enabled API Key.
+                    </p>
+                    <input
+                      type="password"
+                      value={cloudApiKey}
+                      onChange={e => setCloudApiKey(e.target.value)}
+                      placeholder="Enter Google Cloud API Key..."
+                      className="w-full bg-bg-card border border-border-color rounded-lg p-2.5 text-xs focus:ring-2 focus:ring-accent-primary/20 outline-none"
+                    />
+                  </div>
+                )}
+                {sttMode === 'gemini' && (
+                  <div className="space-y-3 animate-in fade-in slide-in-from-left-1">
+                    <p className="text-xs text-text-muted leading-relaxed">
+                      <strong className="text-text-main">Gemini Multimodal (Experimental)</strong>.
+                      Direct audio streaming to Gemini. High latency but context-aware.
+                    </p>
+                    <input
+                      type="password"
+                      value={geminiApiKey}
+                      onChange={e => setGeminiApiKey(e.target.value)}
+                      placeholder="Enter Gemini API Key..."
+                      className="w-full bg-bg-card border border-border-color rounded-lg p-2.5 text-xs focus:ring-2 focus:ring-accent-primary/20 outline-none"
+                    />
+                  </div>
+                )}
+                {sttMode === 'apple' && (
+                  <div className="space-y-3 animate-in fade-in slide-in-from-left-1">
+                    <p className="text-xs text-text-muted leading-relaxed">
+                      <strong className="text-text-main">macOS Dictation (Offline)</strong>.
+                      Uses system SFSpeechRecognizer. Completely private and offline.
+                    </p>
+                    <div className="p-2 bg-bg-card border border-border-color rounded-lg text-center">
+                      <span className="text-[10px] text-text-muted uppercase font-bold">No API Key Needed</span>
+                    </div>
+                  </div>
+                )}
+              </div>
 
-                {/* Context-Sensitive API Key Input */}
-                {sttMode === 'gemini' ? (
-                  <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
-                    <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Gemini API Key</label>
-                    <div className="relative">
-                      <input
-                        type="password"
-                        value={geminiApiKey}
-                        onChange={(e) => setGeminiApiKey(e.target.value)}
-                        placeholder="AIzaSy... (Gemini Key)"
-                        className="w-full bg-[#0f172a] border border-[#334155] p-4 pl-12 rounded-2xl outline-none text-sm text-white focus:border-blue-500/50 transition-all font-medium"
-                      />
-                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    </div>
-                    <p className="text-[9px] text-slate-500 italic">Enter your Gemini key (supports Free Tier)</p>
-                  </div>
-                ) : sttMode === 'cloud' ? (
-                  <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
-                    <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Google Cloud API Key</label>
-                    <div className="relative">
-                      <input
-                        type="password"
-                        value={cloudApiKey}
-                        onChange={(e) => setCloudApiKey(e.target.value)}
-                        placeholder="AIzaSy... (Cloud STT Key)"
-                        className="w-full bg-[#0f172a] border border-[#334155] p-4 pl-12 rounded-2xl outline-none text-sm text-white focus:border-blue-500/50 transition-all font-medium"
-                      />
-                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    </div>
-                    <p className="text-[9px] text-slate-500 italic">Enter your Cloud STT key (requires Billing)</p>
-                  </div>
-                ) : sttMode === 'apple' ? (
-                  <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
-                    <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Apple Native STT</label>
-                    <div className="p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-2xl">
-                      <p className="text-xs text-indigo-300 leading-relaxed font-medium">
-                        Using system-native speech recognition. No API key required.
-                      </p>
-                    </div>
-                  </div>
-                ) : sttMode === 'satellite' ? (
-                  <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
-                    <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Satellite Mode</label>
-                    <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-2xl space-y-4">
-                      <p className="text-xs text-blue-300 leading-relaxed font-medium">
-                        Use your default browser's Web Speech API for free STT.
-                      </p>
-                      <button
-                        onClick={() => {
-                          if (ipcRenderer) {
-                            ipcRenderer.send('open-satellite-browser');
-                          } else {
-                            window.open('/satellite', '_blank');
-                          }
-                        }}
-                        className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[10px] font-bold transition-all shadow-lg"
-                      >
-                        Open Browser Satellite
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="space-y-3">
-                  <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Mic Language</label>
+              {/* Languages */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] text-text-muted uppercase tracking-widest font-bold">Mic Input</label>
                   <div className="relative">
                     <select
-                      value={sourceLang}
-                      onChange={(e) => setSourceLang(e.target.value)}
-                      className="w-full bg-[#0f172a] border border-[#334155] p-4 pr-12 rounded-2xl outline-none text-sm text-white appearance-none cursor-pointer focus:border-blue-500/50 transition-all font-medium"
+                      value={sourceLang} onChange={e => setSourceLang(e.target.value)}
+                      className="w-full appearance-none bg-bg-input hover:bg-bg-hover border border-border-color rounded-xl p-3 pr-8 text-xs font-bold text-text-main cursor-pointer focus:ring-2 focus:ring-accent-primary/20 outline-none transition-colors"
                     >
                       <option value="en-US">English (US)</option>
                       <option value="es-ES">Spanish</option>
@@ -544,17 +459,15 @@ export default function Home() {
                       <option value="de-DE">German</option>
                       <option value="zh-CN">Chinese</option>
                     </select>
-                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-text-muted pointer-events-none" />
                   </div>
                 </div>
-
-                <div className="space-y-3">
-                  <label className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black block">Target Language</label>
+                <div className="space-y-2">
+                  <label className="text-[10px] text-text-muted uppercase tracking-widest font-bold">Translation</label>
                   <div className="relative">
                     <select
-                      value={targetLang}
-                      onChange={(e) => setTargetLang(e.target.value)}
-                      className="w-full bg-[#0f172a] border border-[#334155] p-4 pr-12 rounded-2xl outline-none text-sm text-white appearance-none cursor-pointer focus:border-indigo-500/50 transition-all font-medium"
+                      value={targetLang} onChange={e => setTargetLang(e.target.value)}
+                      className="w-full appearance-none bg-bg-input hover:bg-bg-hover border border-border-color rounded-xl p-3 pr-8 text-xs font-bold text-text-main cursor-pointer focus:ring-2 focus:ring-accent-primary/20 outline-none transition-colors"
                     >
                       <option value="es">Spanish</option>
                       <option value="en">English</option>
@@ -562,299 +475,242 @@ export default function Home() {
                       <option value="de">German</option>
                       <option value="zh">Chinese</option>
                     </select>
-                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
-                  </div>
-                  <div className="pt-2 grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => {
-                        fetchUsageStats();
-                        setShowUsageModal(true);
-                      }}
-                      className="py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-blue-400 hover:border-blue-500/50 transition-all text-[10px] font-bold flex items-center justify-center gap-2"
-                    >
-                      <Monitor className="w-3.5 h-3.5" />
-                      Usage Stats
-                    </button>
-                    <button
-                      onClick={clearApiKeys}
-                      className="py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/20 text-slate-400 hover:text-red-400 hover:border-red-500/50 transition-all text-[10px] font-bold flex items-center justify-center gap-2"
-                    >
-                      <Key className="w-3.5 h-3.5" />
-                      Clear Cache
-                    </button>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-text-muted pointer-events-none" />
                   </div>
                 </div>
               </div>
-            </section>
 
-            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-4 shadow-lg backdrop-blur-sm">
-              <div className="flex items-center justify-between text-indigo-400">
-                <div className="flex items-center gap-3">
-                  <Sparkles className="w-5 h-5" />
-                  <h2 className="text-base font-bold uppercase tracking-widest">AI Translation Refinement</h2>
-                </div>
-              </div>
-              <div className="relative">
-                <select
-                  value={llmModel}
-                  onChange={(e) => setLlmModel(e.target.value)}
-                  className="w-full bg-[#0f172a] border border-[#334155] p-3 pr-10 rounded-xl outline-none text-xs text-white appearance-none cursor-pointer focus:border-indigo-500/50 transition-all font-medium"
+              {/* Primary Action */}
+              <div className="pt-2 space-y-3">
+                <button
+                  onClick={toggleRecording}
+                  disabled={sttMode === 'satellite' && !satelliteReady && !isRecording}
+                  className={`w-full py-4 rounded-2xl flex items-center justify-center gap-3 font-bold text-sm transition-all shadow-lg active:scale-95 ${isRecording
+                    ? 'bg-red-500 text-white shadow-red-500/20'
+                    : sttMode === 'satellite' && !satelliteReady
+                      ? 'bg-bg-input text-text-muted cursor-not-allowed opacity-70'
+                      : 'bg-accent-primary text-white shadow-custom hover:brightness-110'
+                    }`}
                 >
-                  <option value="none">Standard Translation</option>
-                  <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
-                  <option value="gemini-1.5-pro">Gemini 1.5 Pro (Accurate)</option>
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500 pointer-events-none" />
-              </div>
-            </section>
-
-            <div className="space-y-4">
-              <button
-                onClick={toggleRecording}
-                className={`w-full py-6 rounded-3xl flex items-center justify-center gap-4 font-bold text-xl transition-all duration-300 transform active:scale-[0.98] ${isRecording
-                  ? 'bg-red-500 text-white shadow-[0_0_30px_rgba(239,68,68,0.3)]'
-                  : 'bg-[#2563eb] text-white shadow-[0_8px_30px_rgba(37,99,235,0.4)] hover:bg-blue-600'
-                  }`}
-              >
-                {isRecording ? <MicOff className="w-6 h-6 animate-pulse" /> : <Mic className="w-6 h-6" />}
-                {isRecording ? 'Stop Live STT' : 'Start Live STT'}
-              </button>
-              {sttError ? (
-                <p className="text-xs text-red-400 font-medium px-1">{sttError}</p>
-              ) : null}
-
-              <button
-                onClick={toggleOverlay}
-                className={`w-full flex items-center justify-between px-6 py-4 rounded-2xl border transition-all duration-300 font-bold text-xs uppercase tracking-[0.1em] ${overlayVisible
-                  ? 'bg-blue-500/10 border-blue-500/50 text-blue-400'
-                  : 'bg-slate-800/40 border-slate-700/50 text-slate-500 hover:border-slate-500'
-                  }`}
-              >
-                <span>{overlayVisible ? 'Hide Presenter Overlay' : 'Open Presenter Overlay'}</span>
-                <div className={`w-2 h-2 rounded-full ${overlayVisible ? 'bg-blue-400 animate-pulse' : 'bg-slate-700'}`}></div>
-              </button>
-
-              {overlayVisible && (
-                <div className="grid grid-cols-2 gap-2 mt-2">
-                  <button
-                    onClick={() => {
-                      if (ipcRenderer) ipcRenderer.send('set-ignore-mouse', !isOverlayLocked);
-                    }}
-                    className={`py-2.5 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all border ${isOverlayLocked ? 'bg-blue-600 border-blue-500 text-white shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'}`}
-                  >
-                    {isOverlayLocked ? 'Unlock Overlay' : 'Lock Overlay'}
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (ipcRenderer) ipcRenderer.send('close-overlay');
-                    }}
-                    className="py-2.5 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all bg-slate-800 border border-slate-700 text-red-400 hover:bg-red-500/10 hover:border-red-500/50"
-                  >
-                    Close Overlay
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <section className="bg-[#1e293b]/40 border border-[#334155]/50 p-6 rounded-3xl space-y-5 shadow-xl backdrop-blur-sm">
-              <div className="flex items-center gap-3 text-purple-400 mb-2">
-                <History className="w-5 h-5" />
-                <h2 className="text-lg font-bold tracking-tight">Display Settings</h2>
-              </div>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-400">History Segments</span>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="number"
-                      min="1"
-                      max="200"
-                      value={transcriptLimit}
-                      onChange={(e) => setTranscriptLimit(parseInt(e.target.value) || 1)}
-                      className="w-20 bg-slate-900/50 border border-slate-700/50 rounded-lg px-3 py-1 text-sm text-white focus:outline-none focus:border-purple-500/50 transition-colors"
-                    />
-                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Lines</span>
+                  {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                  {isRecording
+                    ? 'Stop Translation'
+                    : sttMode === 'satellite' && !satelliteReady
+                      ? 'Satellite Not Ready'
+                      : 'Start Translation'
+                  }
+                </button>
+                {sttError && (
+                  <div className="bg-red-500/10 border border-red-500/20 p-2 rounded-lg">
+                    <p className="text-[10px] text-red-600 text-center font-bold">{sttError}</p>
                   </div>
-                </div>
+                )}
+
+                <button
+                  onClick={toggleOverlay}
+                  className={`w-full py-3 rounded-xl border flex items-center justify-between px-4 text-xs font-bold uppercase tracking-wider transition-all ${overlayVisible
+                    ? 'bg-accent-primary/10 border-accent-primary text-accent-primary'
+                    : 'bg-bg-input border-transparent text-text-muted hover:bg-bg-hover'
+                    }`}
+                >
+                  <span>Overlay</span>
+                  <div className={`w-1.5 h-1.5 rounded-full ${overlayVisible ? 'bg-accent-primary animate-pulse' : 'bg-slate-400'}`} />
+                </button>
+
+                {overlayVisible && (
+                  <div className="grid grid-cols-2 gap-2 animate-in slide-in-from-top-1">
+                    <button onClick={() => ipcRenderer?.send('set-ignore-mouse', !isOverlayLocked)} className={`py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${isOverlayLocked ? 'bg-accent-secondary text-white border-transparent' : 'bg-bg-input text-text-muted border-transparent hover:bg-bg-hover'}`}>
+                      {isOverlayLocked ? 'Unlock' : 'Lock'}
+                    </button>
+                    <button onClick={() => ipcRenderer?.send('close-overlay')} className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-bg-input text-red-500 hover:text-red-600 border border-transparent hover:bg-red-50 dark:hover:bg-red-900/10">
+                      Close
+                    </button>
+                  </div>
+                )}
               </div>
             </section>
-
-            <div className="p-6 bg-[#1e293b]/20 border border-[#334155]/30 rounded-3xl">
-              <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
-                <Sparkles className="w-3 h-3 inline mr-2 text-indigo-400/60" />
-                Using Google Cloud Speech-to-Text API for maximum stability and accuracy. No more browser bypass hacks required.
-              </p>
-            </div>
           </div>
 
-          <section className="bg-[#1e293b]/20 border border-[#334155]/20 rounded-[2.5rem] p-8 flex flex-col h-full shadow-2xl relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-12 opacity-[0.03] group-hover:opacity-[0.05] transition-opacity pointer-events-none">
-              <Languages className="w-48 h-48" />
-            </div>
-
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-bold text-white flex items-center gap-3">
-                <Languages className="w-5 h-5 text-indigo-400" /> Live Feedback
+          {/* Right Panel: Live Feedback */}
+          <section className="bg-bg-card border border-border-color rounded-3xl p-6 shadow-sm flex flex-col relative overflow-hidden h-full min-h-[400px]">
+            <div className="flex items-center justify-between mb-6 shrink-0">
+              <h2 className="text-lg font-bold flex items-center gap-2 text-text-main">
+                <Sparkles className="w-5 h-5 text-accent-primary" />
+                Live Transcript
               </h2>
-              <button
-                onClick={clearTranscript}
-                className="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/20 text-[10px] font-bold text-slate-500 hover:text-indigo-400 hover:border-indigo-500/50 transition-all flex items-center gap-2"
-              >
-                Clear Content
+              <button onClick={clearTranscript} className="text-[10px] font-bold text-text-muted hover:text-accent-primary transition-colors uppercase tracking-wider">
+                Clear History
               </button>
             </div>
 
-            <div className="space-y-4 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-4">
               {transcriptHistory.length === 0 ? (
-                <div className="space-y-4">
-                  <div className="p-4 rounded-xl bg-slate-800/20 border border-slate-700/30">
-                    <p className="text-base font-medium leading-relaxed text-slate-600 italic">
-                      {isRecording ? "Listening..." : "Click Start to begin..."}
-                    </p>
-                  </div>
-                  <div className="p-6 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
-                    <p className="text-2xl font-bold leading-tight tracking-tight text-slate-800">
-                      ---
-                    </p>
-                  </div>
+                <div className="h-full flex flex-col items-center justify-center text-text-muted opacity-40">
+                  <Monitor className="w-12 h-12 mb-4 stroke-1" />
+                  <p className="text-sm">Ready to translate...</p>
                 </div>
               ) : (
                 transcriptHistory.map((item, idx) => (
-                  <div key={idx} className={`space-y-2 animate-in fade-in slide-in-from-bottom-2 duration-500 ${idx !== 0 ? 'opacity-40 grayscale-[0.5] scale-[0.98] origin-top' : ''}`}>
-                    {/* Original Block */}
-                    <div className="p-3.5 pt-7 rounded-xl bg-slate-800/40 border border-slate-700/50 relative group/block">
-                      {!item.isFinal && (
-                        <div className="absolute top-2 left-2 bg-blue-600 text-[7px] font-black uppercase px-1.5 py-0.5 rounded shadow-lg animate-pulse z-10">
-                          Live
-                        </div>
-                      )}
-                      <p className="text-sm font-medium leading-relaxed text-slate-300">
-                        {item.original}
-                      </p>
-                    </div>
+                  <div key={idx} className={`p-5 rounded-2xl transition-all ${idx === 0
+                    ? 'bg-bg-input border border-border-color shadow-sm'
+                    : 'opacity-50 grayscale'
+                    }`}>
+                    <div className="flex flex-col gap-4">
+                      {/* Original */}
+                      <div>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-accent-primary opacity-60 block mb-1">Transcription</span>
+                        <p className="text-base font-bold text-text-main leading-relaxed">
+                          {item.original}
+                        </p>
+                      </div>
 
-                    {/* Translated Block */}
-                    <div className="p-5 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 relative shadow-inner">
-                      <p className="text-xl font-bold leading-snug tracking-tight text-white drop-shadow-sm">
-                        {item.translated || (item.isFinal ? "Translating..." : "...")}
-                      </p>
+                      {/* Translated */}
+                      <div className={`pt-3 border-t border-border-color/50 ${!item.translated && !item.isFinal ? 'hidden' : ''}`}>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-teal-500 opacity-60 block mb-1">Translation</span>
+                        <p className={`font-bold leading-relaxed text-text-main ${idx === 0 ? 'text-xl' : 'text-base'}`}>
+                          {item.translated || (item.isFinal ? 'Translating...' : '...')}
+                        </p>
+                      </div>
                     </div>
-
-                    {idx !== transcriptHistory.length - 1 && <div className="h-2" />}
                   </div>
                 ))
               )}
             </div>
-
-            {isRecording && hasMounted && (
-              <div className="mt-auto flex gap-1 items-end h-8 overflow-hidden opacity-50">
-                {[...Array(16)].map((_, idx) => (
-                  <div
-                    key={idx}
-                    className="w-1 bg-blue-500/50 rounded-full animate-wave"
-                    style={{
-                      height: `${20 + Math.random() * 80}%`,
-                      animationDelay: `${idx * 0.05}s`,
-                      animationDuration: `${0.5 + Math.random()}s`
-                    }}
-                  />
-                ))}
-              </div>
-            )}
           </section>
         </div>
-      </div >
+      </div>
 
-      {/* Usage Modal */}
-      {
-        showUsageModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-[#1e293b] border border-[#334155] rounded-[2rem] w-full max-w-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
-              <div className="p-8 border-b border-[#334155] flex items-center justify-between bg-[#0f172a]/50">
-                <div className="flex items-center gap-3">
-                  <div className="bg-blue-600/20 p-2 rounded-lg">
-                    <Monitor className="w-5 h-5 text-blue-400" />
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-bg-card border border-border-color rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95">
+            <div className="p-6 border-b border-border-color flex items-center justify-between">
+              <h3 className="text-lg font-bold text-text-main">Settings</h3>
+              <button onClick={() => setShowSettingsModal(false)} className="p-2 hover:bg-bg-hover rounded-full transition-colors"><X className="w-5 h-5 text-text-muted" /></button>
+            </div>
+
+            <div className="flex border-b border-border-color p-2 gap-2 bg-bg-input/50">
+              <button onClick={() => setSettingsTab('general')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${settingsTab === 'general' ? 'bg-bg-card shadow-sm text-text-main border border-border-color' : 'text-text-muted hover:text-text-main hover:bg-bg-hover'}`}>General</button>
+              <button onClick={() => setSettingsTab('translation')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${settingsTab === 'translation' ? 'bg-bg-card shadow-sm text-text-main border border-border-color' : 'text-text-muted hover:text-text-main hover:bg-bg-hover'}`}>Translation</button>
+              <button onClick={() => { setSettingsTab('usage'); fetchUsageStats(); }} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${settingsTab === 'usage' ? 'bg-bg-card shadow-sm text-text-main border border-border-color' : 'text-text-muted hover:text-text-main hover:bg-bg-hover'}`}>Usage</button>
+            </div>
+
+            <div className="p-6 h-[400px] overflow-y-auto custom-scrollbar flex flex-col">
+              {settingsTab === 'general' && (
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                  {/* Display Settings */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 text-accent-primary">
+                      <Monitor className="w-4 h-4" />
+                      <h4 className="text-xs font-bold uppercase tracking-widest">Display</h4>
+                    </div>
+                    <div className="bg-bg-input p-4 rounded-xl border border-border-color flex items-center justify-between">
+                      <span className="text-sm font-medium text-text-main">History Lines</span>
+                      <input type="number" min="1" max="100" value={transcriptLimit} onChange={(e) => setTranscriptLimit(Number(e.target.value))} className="w-16 bg-bg-card border border-border-color rounded-lg px-2 py-1 text-sm text-center focus:ring-2 focus:ring-accent-primary/20 outline-none" />
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-xl font-bold text-white">Daily STT Usage</h3>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Today: {usageStats?.date || '...'}</p>
+
+                  {/* Theme Toggle (Interactive Switch) */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 text-text-muted">
+                      {theme === 'light' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                      <h4 className="text-xs font-bold uppercase tracking-widest">Appearance</h4>
+                    </div>
+                    <div
+                      onClick={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}
+                      className="bg-bg-input p-4 rounded-xl border border-border-color flex items-center justify-between cursor-pointer group hover:bg-bg-hover transition-colors"
+                    >
+                      <span className="text-sm font-medium text-text-main">{theme === 'light' ? 'Light Mode' : 'Dark Mode'}</span>
+                      <div className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 ${theme === 'dark' ? 'bg-accent-primary' : 'bg-slate-300'}`}>
+                        <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300 transform ${theme === 'dark' ? 'translate-x-6' : 'translate-x-0'}`} />
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => setShowUsageModal(false)}
-                  className="p-2 hover:bg-slate-700 rounded-full transition-colors"
-                >
-                  <div className="w-5 h-5 flex items-center justify-center text-slate-400">✕</div>
-                </button>
-              </div>
+              )}
 
-              <div className="p-8">
-                {isLoadingUsage ? (
-                  <div className="flex flex-col items-center justify-center py-20 space-y-4">
-                    <div className="w-8 h-8 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
-                    <p className="text-sm font-medium">Loading statistics...</p>
-                  </div>
-                ) : usageStats && Object.keys(usageStats.usage).length > 0 ? (
-                  <div className="space-y-6">
-                    <div className="overflow-hidden rounded-2xl border border-[#334155] bg-[#0f172a]/30">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="bg-[#0f172a]/50">
-                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">API Key (Masked)</th>
-                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">Usage</th>
-                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-[#334155]">Progress</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {Object.entries(usageStats.usage).map(([key, seconds], idx) => {
-                            const percent = Math.min(100, (seconds / usageStats.limit) * 100);
-                            return (
-                              <tr key={idx} className="border-b border-[#334155]/50 last:border-0 hover:bg-white/5 transition-colors">
-                                <td className="px-6 py-5">
-                                  <code className="text-blue-400 text-xs font-mono">{key}</code>
-                                </td>
-                                <td className="px-6 py-5">
-                                  <span className="text-white font-bold">{formatDuration(seconds)}</span>
-                                  <span className="text-slate-500 text-[10px] ml-1">/ {usageStats.limit / 3600}h</span>
-                                </td>
-                                <td className="px-6 py-5">
-                                  <div className="w-32 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                                    <div
-                                      className={`h-full rounded-full transition-all duration-1000 ${percent > 90 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : percent > 50 ? 'bg-amber-500' : 'bg-blue-500'}`}
-                                      style={{ width: `${percent}%` }}
-                                    ></div>
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+              {settingsTab === 'translation' && (
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 text-accent-primary">
+                      <Languages className="w-4 h-4" />
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-text-muted">Method Settings</h4>
                     </div>
-                    <p className="text-[10px] text-slate-500 leading-relaxed text-center italic">
-                      Note: Usage is reset daily at 00:00 (server time). Limits are applied per API Key.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-20 bg-[#0f172a]/20 rounded-2xl border border-dashed border-[#334155]">
-                    <Monitor className="w-12 h-12 text-slate-700 mb-4" />
-                    <p className="text-slate-400 font-medium">No usage recorded for today yet.</p>
-                  </div>
-                )}
-              </div>
 
-              <div className="p-8 bg-[#0f172a]/30 border-t border-[#334155] flex justify-end">
-                <button
-                  onClick={() => setShowUsageModal(false)}
-                  className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold text-xs transition-all border border-[#334155]"
-                >
-                  Close
-                </button>
-              </div>
+                    <div className="space-y-4">
+                      <div className="bg-bg-input p-4 rounded-xl border border-border-color space-y-2">
+                        <label className="text-xs font-bold text-text-main uppercase tracking-tighter">Translation Mode</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => setLlmModel('none')}
+                            className={`py-2 rounded-lg text-[10px] font-bold transition-all border ${llmModel === 'none' ? 'bg-accent-primary text-white border-transparent shadow-sm' : 'bg-bg-card text-text-muted border-border-color'}`}
+                          >
+                            Standard (Fast)
+                          </button>
+                          <button
+                            onClick={() => setLlmModel('gemini-1.5-flash')}
+                            className={`py-2 rounded-lg text-[10px] font-bold transition-all border ${llmModel !== 'none' ? 'bg-accent-primary text-white border-transparent shadow-sm' : 'bg-bg-card text-text-muted border-border-color'}`}
+                          >
+                            AI Refined (Accurate)
+                          </button>
+                        </div>
+                        <p className="mt-2 text-[10px] text-text-muted leading-relaxed italic">
+                          {llmModel === 'none'
+                            ? "Standard: Direct translation for near-zero latency. Best for fast-paced speech."
+                            : "AI Refined: Processes text through Gemini to ensure natural phrasing and context logic."}
+                        </p>
+                      </div>
+
+                      {llmModel !== 'none' && (
+                        <div className="bg-bg-input p-4 rounded-xl border border-border-color animate-in slide-in-from-top-2 duration-300">
+                          <div className="flex items-center gap-2 mb-3">
+                            <Sparkles className="w-4 h-4 text-accent-secondary" />
+                            <h4 className="text-xs font-bold uppercase tracking-widest text-text-muted">AI Capabilities</h4>
+                          </div>
+                          <select
+                            value={llmModel}
+                            onChange={(e) => setLlmModel(e.target.value)}
+                            className="w-full bg-bg-card border border-border-color rounded-lg p-2.5 text-xs font-medium text-text-main outline-none focus:ring-2 focus:ring-accent-primary/20"
+                          >
+                            <option value="gemini-1.5-flash">Gemini 1.5 Flash (Balanced)</option>
+                            <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep context)</option>
+                          </select>
+                          <p className="mt-3 text-[10px] text-text-muted leading-relaxed">
+                            AI Refinement processes translations through Gemini to improve coherence and natural phrasing.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'usage' && (
+                <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300 flex-1">
+                  {isLoadingUsage ? (
+                    <div className="flex-1 flex flex-col items-center justify-center opacity-50">
+                      <div className="w-6 h-6 border-2 border-accent-primary border-t-transparent rounded-full animate-spin mb-2" />
+                      <p className="text-xs">Loading...</p>
+                    </div>
+                  ) : usageStats ? (
+                    <div className="space-y-4">
+                      <div className="p-4 bg-bg-input rounded-xl border border-border-color">
+                        <p className="text-xs text-text-muted uppercase tracking-widest font-bold mb-1">Total Characters</p>
+                        <p className="text-2xl font-bold text-text-main">{usageStats.totalChars}</p>
+                      </div>
+                      <p className="text-xs text-center text-text-muted italic">Usage data for {usageStats.date}</p>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center">
+                      <p className="text-sm text-text-muted">No usage data available.</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-        )
-      }
-    </main >
+        </div>
+      )}
+    </main>
   );
 }
