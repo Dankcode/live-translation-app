@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { X, Sparkles, GripVertical, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
+import { X, Sparkles, GripVertical, Maximize2, ChevronUp, ChevronDown, Settings as SettingsIcon } from 'lucide-react';
 
 const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
 
@@ -11,6 +11,8 @@ export default function OverlayPage() {
     const [isClickThrough, setIsClickThrough] = useState(false);
     const [isResizing, setIsResizing] = useState(false);
     const [hasMounted, setHasMounted] = useState(false);
+    const [bgOpacity, setBgOpacity] = useState(0.7);
+    const [showSettings, setShowSettings] = useState(false);
     const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
     const scrollContainerRef = useRef(null);
 
@@ -20,17 +22,16 @@ export default function OverlayPage() {
         document.documentElement.classList.add('bg-transparent-window');
         setHasMounted(true);
 
+        // Load saved opacity
+        const savedOpacity = localStorage.getItem('overlay_opacity');
+        if (savedOpacity) setBgOpacity(parseFloat(savedOpacity));
+
         if (ipcRenderer) {
             ipcRenderer.send('set-ignore-mouse', false);
 
             const subtitleHandler = (event, data) => {
-                // data can be a single object or an array
                 setSubtitleHistory(prev => {
                     const newItems = Array.isArray(data) ? data : [data];
-                    // If the first item in newItems has the same 'id' or content as the first in prev, we might be updating
-                    // For now, let's assume the sender manages the 'history' or sends the full list.
-                    // But if it's a single update (interim), we should replace the top item.
-                    // However, to keep it simple and robust, we'll let page.js send the full history.
                     return newItems;
                 });
                 setVisible(true);
@@ -49,6 +50,13 @@ export default function OverlayPage() {
             };
         }
     }, []);
+
+    // Save opacity when it changes
+    useEffect(() => {
+        if (hasMounted) {
+            localStorage.setItem('overlay_opacity', bgOpacity.toString());
+        }
+    }, [bgOpacity, hasMounted]);
 
     const handleClose = () => {
         if (ipcRenderer) ipcRenderer.send('close-overlay');
@@ -116,52 +124,89 @@ export default function OverlayPage() {
     if (!hasMounted) return null;
 
     return (
-        <div className={`flex flex-col items-center justify-center h-full w-full p-2 group overflow-hidden transition-all duration-700 ${isClickThrough ? 'pointer-events-none' : ''}`}>
+        <div className={`flex flex-col items-center justify-center h-full w-full p-6 group overflow-hidden transition-all duration-700 ${isClickThrough ? 'pointer-events-none' : ''}`}>
             <div
-                className={`relative bg-black/70 backdrop-blur-3xl rounded-3xl p-8 border-2 
-                    opacity-10 group-hover:opacity-100
-                    ${isClickThrough ? 'border-transparent' : 'border-white/20 group-hover:border-white/40'} 
-                    shadow-[0_20px_60px_rgba(0,0,0,0.8)] max-w-[95%] w-full h-full text-center 
-                    transform overflow-visible pointer-events-auto flex flex-col
-                    transition-all duration-500
-                    ${isResizing ? 'transition-none scale-100 opacity-100' : 'scale-100 group-hover:scale-[1.01]'}`}
-                style={{ WebkitAppRegion: isResizing ? 'none' : (isClickThrough ? 'none' : 'drag') }}
+                className={`relative rounded-3xl p-8 border-2 transition-all duration-500 overflow-visible pointer-events-auto flex flex-col w-full h-full
+                    ${isClickThrough ? 'border-transparent shadow-none' : 'border-white/10 group-hover:border-white/30 shadow-[0_20px_60px_rgba(0,0,0,0.8)]'} 
+                    ${isResizing ? 'transition-none' : 'scale-100'}`}
+                style={{
+                    backgroundColor: `rgba(0, 0, 0, ${bgOpacity})`,
+                    backdropFilter: 'blur(32px)',
+                    WebkitBackdropFilter: 'blur(32px)',
+                    WebkitAppRegion: isResizing ? 'none' : (isClickThrough ? 'none' : 'drag')
+                }}
             >
-                {/* Top-Right Close Button */}
+                {/* Header Controls */}
                 {!isClickThrough && (
-                    <button
-                        onClick={handleClose}
-                        className="absolute top-4 right-4 p-2 bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 rounded-xl transition-all duration-300 no-drag z-50 group/close opacity-0 group-hover:opacity-100"
-                        title="Close Overlay"
-                    >
-                        <X className="w-5 h-5" />
-                    </button>
+                    <div className="absolute top-4 right-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all duration-300 z-50 no-drag">
+                        <button
+                            onClick={() => setShowSettings(!showSettings)}
+                            className={`p-2 rounded-xl transition-all duration-300 ${showSettings ? 'bg-teal-500 text-white' : 'bg-white/5 hover:bg-white/10 text-white/40 hover:text-white'}`}
+                            title="Overlay Settings"
+                        >
+                            <SettingsIcon className="w-5 h-5" />
+                        </button>
+                        <button
+                            onClick={handleClose}
+                            className="p-2 bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 rounded-xl transition-all duration-300"
+                            title="Close Overlay"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+                )}
+
+                {/* Settings Popover */}
+                {showSettings && !isClickThrough && (
+                    <div className="absolute top-16 right-4 w-64 bg-slate-900/95 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-2xl p-5 z-[60] no-drag animate-in fade-in zoom-in-95 duration-200">
+                        <div className="space-y-6">
+                            {/* Opacity Slider */}
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">Opacity</span>
+                                    <span className="text-[10px] font-mono text-teal-400">{Math.round(bgOpacity * 100)}%</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="0.05"
+                                    max="1"
+                                    step="0.01"
+                                    value={bgOpacity}
+                                    onChange={(e) => setBgOpacity(parseFloat(e.target.value))}
+                                    className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-teal-500"
+                                />
+                            </div>
+
+                            {/* Size Presets */}
+                            <div className="space-y-3">
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">Size Presets</span>
+                                <div className="grid grid-cols-3 gap-2">
+                                    <button onClick={() => handleResize('small')} className="py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[9px] font-bold uppercase text-white/60 hover:text-white transition-all">Small</button>
+                                    <button onClick={() => handleResize('medium')} className="py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[9px] font-bold uppercase text-white/60 hover:text-white transition-all">Med</button>
+                                    <button onClick={() => handleResize('large')} className="py-2 rounded-lg bg-white/5 hover:bg-white/10 text-[9px] font-bold uppercase text-white/60 hover:text-white transition-all">Large</button>
+                                </div>
+                            </div>
+
+                            {/* Mouse Lock */}
+                            <div className="pt-2">
+                                <button
+                                    onClick={toggleClickThrough}
+                                    className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${isClickThrough ? 'bg-teal-600 text-white' : 'bg-white/5 hover:bg-teal-500/20 text-teal-400'}`}
+                                >
+                                    <Sparkles className="w-4 h-4" />
+                                    Mouse Lock
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 )}
 
                 {/* Top-Left Anchor Handle */}
                 {!isClickThrough && (
-                    <div className="absolute -top-3 -left-3 bg-teal-600 p-1.5 rounded-lg shadow-xl cursor-grab active:cursor-grabbing hover:scale-110 transition-all opacity-0 group-hover:opacity-100">
+                    <div className="absolute -top-3 -left-3 bg-teal-600 p-1.5 rounded-lg shadow-xl cursor-grab active:cursor-grabbing hover:scale-110 transition-all opacity-0 group-hover:opacity-100 z-50">
                         <GripVertical className="w-5 h-5 text-white" />
                     </div>
                 )}
-
-                {/* Control Bar (Visible on hover) */}
-                <div className="absolute -top-12 left-1/2 -translate-x-1/2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity no-drag p-2 bg-slate-900/80 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl">
-                    <button onClick={() => handleResize('small')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Small</button>
-                    <button onClick={() => handleResize('medium')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Med</button>
-                    <button onClick={() => handleResize('large')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Large</button>
-                    <div className="w-px h-4 bg-white/10 mx-1" />
-                    <button
-                        onClick={toggleClickThrough}
-                        className={`p-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${isClickThrough ? 'bg-teal-600 text-white' : 'hover:bg-white/10 text-slate-400'}`}
-                    >
-                        {isClickThrough ? <Sparkles className="w-3 h-3" /> : null} Mouse Lock
-                    </button>
-                    <div className="w-px h-4 bg-white/10 mx-1" />
-                    <button onClick={handleClose} className="p-2 hover:bg-red-500/20 text-red-400 hover:text-red-300 rounded-xl transition-colors">
-                        <X className="w-4 h-4" />
-                    </button>
-                </div>
 
                 <div
                     ref={scrollContainerRef}
@@ -173,15 +218,15 @@ export default function OverlayPage() {
                         </p>
                     ) : (
                         subtitleHistory.slice(0, 2).map((sub, idx) => (
-                            <div key={idx} className={`space-y-2 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
-                                {/* Original Transcription - TOP */}
-                                <p className={`text-white leading-tight tracking-tight drop-shadow-2xl select-none break-words font-extrabold ${idx === 0 ? 'text-3xl' : 'text-xl'}`}>
+                            <div key={idx} className={`space-y-1 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
+                                {/* Original Transcription - TOP (Secondary) */}
+                                <p className={`text-teal-400/70 font-bold italic select-none break-words leading-tight ${idx === 0 ? 'text-xl' : 'text-base'}`}>
                                     {sub.original}
                                 </p>
 
-                                {/* Translation - BOTTOM */}
+                                {/* Translation - BOTTOM (Primary) */}
                                 {sub.translated && (
-                                    <p className={`text-teal-300 font-bold italic select-none break-words leading-relaxed ${idx === 0 ? 'text-xl opacity-90' : 'text-base opacity-60'}`}>
+                                    <p className={`text-white leading-tight tracking-tight drop-shadow-2xl select-none break-words font-black ${idx === 0 ? 'text-4xl' : 'text-2xl'}`}>
                                         {sub.translated}
                                     </p>
                                 )}
