@@ -80,8 +80,57 @@ function createMainWindow() {
     },
   });
 
-  const url = app.isPackaged ? 'http://localhost:3000' : 'http://localhost:3000';
-  mainWindow.loadURL(url);
+  const url = 'http://localhost:3000';
+
+  if (app.isPackaged) {
+    // In production, start the Next.js server and wait for it to be ready
+    const { fork } = require('child_process');
+    const nextCli = path.join(app.getAppPath(), 'node_modules/next/dist/bin/next');
+
+    const serverProcess = fork(nextCli, ['start', '-p', '3000'], {
+      cwd: app.getAppPath(),
+      env: { ...process.env, NODE_ENV: 'production' },
+      stdio: 'pipe'
+    });
+
+    serverProcess.stdout.on('data', (data) => console.log(`Next.js: ${data}`));
+    serverProcess.stderr.on('data', (data) => console.error(`Next.js Error: ${data}`));
+
+    // Check port 3000 periodically
+    const checkServer = setInterval(() => {
+      const http = require('http');
+      const request = http.request({ port: 3000, timeout: 1000 }, (res) => {
+        if (res.statusCode === 200 || res.statusCode === 404) {
+          clearInterval(checkServer);
+          console.log('Next.js server is ready, loading windows...');
+          mainWindow.loadURL(url);
+          if (overlayWindow) {
+            overlayWindow.loadURL('http://localhost:3000/overlay');
+          }
+        }
+      });
+      request.on('error', () => { /* Server not ready yet */ });
+      request.end();
+    }, 1000);
+
+    // Fail after 60 seconds
+    setTimeout(() => {
+      if (mainWindow && mainWindow.webContents.getURL() === '') {
+        clearInterval(checkServer);
+        const { dialog } = require('electron');
+        dialog.showErrorBox('Startup Error', 'The application server failed to start within 60 seconds.');
+      }
+    }, 60000);
+
+    app.on('will-quit', () => {
+      serverProcess.kill();
+    });
+  } else {
+    mainWindow.loadURL(url);
+  }
+
+  // Help debugging in production for now
+  // mainWindow.webContents.openDevTools();
 }
 
 function createOverlayWindow() {
@@ -92,7 +141,6 @@ function createOverlayWindow() {
     frame: false,
     alwaysOnTop: true,
     hasShadow: false,
-    // Keep the main window usable while overlay is shown.
     focusable: false,
     resizable: true,
     show: false,
@@ -115,11 +163,15 @@ function createOverlayWindow() {
   overlayWindow.setPosition(Math.floor((width - 1200) / 2), height - 250);
 
   const url = 'http://localhost:3000/overlay';
-  overlayWindow.loadURL(url);
+  if (!app.isPackaged) {
+    overlayWindow.loadURL(url);
+  }
 }
 
 app.whenReady().then(async () => {
   createMainWindow();
+  // overlayWindow creation is called inside createMainWindow's server-ready callback if packaged,
+  // or immediately if not. Wait, let's keep createOverlayWindow here but only loadURL when ready.
   createOverlayWindow();
   startWebSocketServer();
   await requestPermissions();
