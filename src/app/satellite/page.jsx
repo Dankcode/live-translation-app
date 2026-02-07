@@ -18,6 +18,7 @@ export default function SatellitePage() {
     const recognitionRef = useRef(null);
     const wsRef = useRef(null);
     const isRecognitionRunningRef = useRef(false);
+    const shouldBeActiveRef = useRef(false);
 
     // Safe access to Electron IPC
     const ipc = typeof window !== 'undefined' && window.require
@@ -36,7 +37,9 @@ export default function SatellitePage() {
         if (!recognition) return;
 
         addLog(`Remote command: START [${sourceLang || 'auto'}]`);
-        window._shouldBeActive = true;
+        shouldBeActiveRef.current = true;
+        setIsActive(true);
+        setStatus("Listening");
 
         if (sourceLang) {
             recognition.lang = sourceLang;
@@ -49,23 +52,31 @@ export default function SatellitePage() {
                 recognition.start();
             } catch (e) {
                 addLog(`Activation failed: ${e.message}`);
+                // Don't flip state back immediately, let onend handle it if it fails
             }
         }
     };
 
     const executeStop = () => {
         addLog("Remote command: STOP");
-        window._shouldBeActive = false;
+        shouldBeActiveRef.current = false;
+        setIsActive(false);
+        setStatus("Standby");
+
         if (isRecognitionRunningRef.current && recognitionRef.current) {
             recognitionRef.current.stop();
         }
     };
 
     const toggleRecording = () => {
-        const newActive = !isActive;
-        const command = newActive ? 'start' : 'stop';
+        const nextStateIsActive = !isActive;
+        const command = nextStateIsActive ? 'start' : 'stop';
 
-        // Send to main process
+        // 1. Immediate local UI feedback and intent storage
+        if (nextStateIsActive) executeStart();
+        else executeStop();
+
+        // 2. Broadcast to other nodes
         const payload = {
             type: 'command',
             command: command,
@@ -77,11 +88,6 @@ export default function SatellitePage() {
         } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify(payload));
         }
-
-        // Local feedback (will be overridden by remote command if loopback exists, 
-        // but provides immediate UI feedback)
-        if (newActive) executeStart();
-        else executeStop();
     };
 
     useEffect(() => {
@@ -101,9 +107,14 @@ export default function SatellitePage() {
 
         recognition.onstart = () => {
             addLog("Audio stream initialized.");
-            setStatus("Listening");
-            setIsActive(true);
             isRecognitionRunningRef.current = true;
+            // Only update UI if we're still supposed to be active
+            if (shouldBeActiveRef.current) {
+                setIsActive(true);
+                setStatus("Listening");
+            } else {
+                recognition.stop();
+            }
         };
 
         recognition.onresult = (event) => {
@@ -144,6 +155,8 @@ export default function SatellitePage() {
             addLog(`Recognition error: ${event.error}`);
             if (event.error === 'not-allowed') {
                 setStatus("Access Denied");
+                shouldBeActiveRef.current = false;
+                setIsActive(false);
             }
         };
 
@@ -151,11 +164,10 @@ export default function SatellitePage() {
             isRecognitionRunningRef.current = false;
 
             // Auto-restart if we're supposed to be active (prevents timeouts)
-            if (window._shouldBeActive) {
+            if (shouldBeActiveRef.current) {
                 addLog("Stream timed out, auto-restarting...");
-                // Brief delay to ensure clean state
                 setTimeout(() => {
-                    if (window._shouldBeActive && !isRecognitionRunningRef.current) {
+                    if (shouldBeActiveRef.current && !isRecognitionRunningRef.current) {
                         try {
                             recognition.start();
                         } catch (e) {
