@@ -1,269 +1,155 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { X, Sparkles, GripVertical, Maximize2, ChevronUp, ChevronDown } from 'lucide-react';
+import { X, Maximize2, ArrowLeftRight } from 'lucide-react';
 
 const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
 
 export default function OverlayPage() {
-    const [subtitleHistory, setSubtitleHistory] = useState([]); // Array of {original, translated}
-    const [visible, setVisible] = useState(false);
-    const [isClickThrough, setIsClickThrough] = useState(false);
+    const [subtitleHistory, setSubtitleHistory] = useState([]);
+    const [isHovered, setIsHovered] = useState(false);
+    const [isListening, setIsListening] = useState(false);
+    const [sourceLang, setSourceLang] = useState('en-US');
+    const [targetLang, setTargetLang] = useState('es');
     const [isResizing, setIsResizing] = useState(false);
     const [hasMounted, setHasMounted] = useState(false);
+
+    const recognitionRef = useRef(null);
     const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
-    const scrollContainerRef = useRef(null);
 
     useEffect(() => {
-        // Add class to body and html for transparency
-        document.body.classList.add('bg-transparent-window');
-        document.documentElement.classList.add('bg-transparent-window');
         setHasMounted(true);
+        const style = document.createElement('style');
+        style.innerHTML = `
+            html, body { background: transparent !important; overflow: hidden; margin: 0; padding: 0; }
+            * { transition: background 0.3s ease, border 0.3s ease, opacity 0.3s ease; }
+        `;
+        document.head.appendChild(style);
 
         if (ipcRenderer) {
-            ipcRenderer.send('set-ignore-mouse', false);
-
-            const subtitleHandler = (event, data) => {
-                // data can be a single object or an array
-                setSubtitleHistory(prev => {
-                    const newItems = Array.isArray(data) ? data : [data];
-                    // If the first item in newItems has the same 'id' or content as the first in prev, we might be updating
-                    // For now, let's assume the sender manages the 'history' or sends the full list.
-                    // But if it's a single update (interim), we should replace the top item.
-                    // However, to keep it simple and robust, we'll let page.js send the full history.
-                    return newItems;
-                });
-                setVisible(true);
+            const onSub = (e, data) => setSubtitleHistory(data || []);
+            const onStart = (e, cfg) => {
+                if (cfg?.sourceLang) setSourceLang(cfg.sourceLang);
+                if (cfg?.targetLang) setTargetLang(cfg.targetLang);
+                startListening(cfg?.sourceLang || sourceLang);
             };
+            const onStop = () => stopListening();
 
-            ipcRenderer.on('receive-subtitle', subtitleHandler);
-
-            const lockHandler = (event, ignore) => {
-                setIsClickThrough(ignore);
-            };
-            ipcRenderer.on('overlay-lock-status', lockHandler);
-
+            ipcRenderer.on('receive-subtitle', onSub);
+            ipcRenderer.on('start-stt', onStart);
+            ipcRenderer.on('stop-stt', onStop);
             return () => {
-                ipcRenderer.removeListener('receive-subtitle', subtitleHandler);
-                ipcRenderer.removeListener('overlay-lock-status', lockHandler);
+                ipcRenderer.removeListener('receive-subtitle', onSub);
+                ipcRenderer.removeListener('start-stt', onStart);
+                ipcRenderer.removeListener('stop-stt', onStop);
             };
         }
-    }, []);
-
-    const handleClose = () => {
-        if (ipcRenderer) ipcRenderer.send('close-overlay');
-    };
-
-    const handleResize = (size) => {
-        if (!ipcRenderer) return;
-        const width = size === 'small' ? 800 : size === 'large' ? 1400 : 1200;
-        const height = size === 'small' ? 200 : size === 'large' ? 800 : 600;
-        ipcRenderer.send('resize-overlay', { width, height });
-    };
-
-    const toggleClickThrough = () => {
-        if (ipcRenderer) ipcRenderer.send('set-ignore-mouse', !isClickThrough);
-    };
-
-    const handleResizeMouseDown = (e) => {
-        if (isClickThrough) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setIsResizing(true);
-        resizeStart.current = {
-            x: e.screenX,
-            y: e.screenY,
-            w: window.outerWidth,
-            h: window.outerHeight
-        };
-    };
+    }, [sourceLang, targetLang]);
 
     useEffect(() => {
-        if (!isResizing || !ipcRenderer) return;
+        if (ipcRenderer) ipcRenderer.send('overlay-hover', isHovered);
+    }, [isHovered]);
 
-        const handleMouseMove = (e) => {
-            const deltaX = e.screenX - resizeStart.current.x;
-            const deltaY = e.screenY - resizeStart.current.y;
-            const newWidth = Math.max(400, resizeStart.current.w + deltaX);
-            const newHeight = Math.max(150, resizeStart.current.h + deltaY);
-            ipcRenderer.send('resize-overlay', { width: newWidth, height: newHeight });
-        };
+    const startListening = (lang) => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) return;
 
-        const handleMouseUp = () => {
-            setIsResizing(false);
-        };
+        if (!recognitionRef.current) {
+            const rec = new SpeechRecognition();
+            rec.continuous = true;
+            rec.interimResults = true;
+            rec.onstart = () => setIsListening(true);
+            rec.onresult = (e) => {
+                let text = '';
+                for (let i = e.resultIndex; i < e.results.length; ++i) text += e.results[i][0].transcript;
+                if (text?.trim() && ipcRenderer) ipcRenderer.send('satellite-data', { transcript: text, isFinal: e.results[e.results.length - 1].isFinal, timestamp: Date.now() });
+            };
+            rec.onend = () => window._active && setTimeout(() => { try { rec.start(); } catch (err) { } }, 200);
+            recognitionRef.current = rec;
+        }
+        window._active = true;
+        recognitionRef.current.lang = lang;
+        try { recognitionRef.current.start(); } catch (e) { recognitionRef.current.stop(); setTimeout(() => recognitionRef.current.start(), 100); }
+    };
 
-        window.addEventListener('mousemove', handleMouseMove);
-        window.addEventListener('mouseup', handleMouseUp);
-        return () => {
-            window.removeEventListener('mousemove', handleMouseMove);
-            window.removeEventListener('mouseup', handleMouseUp);
-        };
-    }, [isResizing]);
+    const stopListening = () => {
+        window._active = false;
+        recognitionRef.current?.stop();
+        setIsListening(false);
+    };
 
-    const isEmpty = subtitleHistory.length === 0 || (subtitleHistory.length === 1 && !subtitleHistory[0].translated && !subtitleHistory[0].original);
-
-    const handleManualScroll = (direction) => {
-        if (scrollContainerRef.current) {
-            const scrollAmount = 100;
-            scrollContainerRef.current.scrollBy({
-                top: direction === 'up' ? -scrollAmount : scrollAmount,
-                behavior: 'smooth'
-            });
+    const swapLangs = () => {
+        const map = { en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE', zh: 'zh-CN' };
+        const newSrc = map[targetLang] || `${targetLang}-US`;
+        const newTgt = sourceLang.split('-')[0];
+        setSourceLang(newSrc); setTargetLang(newTgt);
+        if (ipcRenderer) {
+            ipcRenderer.send('sync-languages', { sourceLang: newSrc, targetLang: newTgt });
+            if (isListening) { stopListening(); setTimeout(() => startListening(newSrc), 300); }
         }
     };
 
     if (!hasMounted) return null;
 
+    const items = subtitleHistory.slice(0, 2);
+    const isEmpty = items.length === 0 || (!items[0]?.original && !items[0]?.translated);
+
     return (
-        <div className={`flex flex-col items-center justify-center h-full w-full p-2 group overflow-hidden transition-all duration-700 ${isClickThrough ? 'pointer-events-none' : ''}`}>
-            <div
-                className={`relative bg-black/70 backdrop-blur-3xl rounded-3xl p-8 border-2 
-                    opacity-10 group-hover:opacity-100
-                    ${isClickThrough ? 'border-transparent' : 'border-white/20 group-hover:border-white/40'} 
-                    shadow-[0_20px_60px_rgba(0,0,0,0.8)] max-w-[95%] w-full h-full text-center 
-                    transform overflow-visible pointer-events-auto flex flex-col
-                    transition-all duration-500
-                    ${isResizing ? 'transition-none scale-100 opacity-100' : 'scale-100 group-hover:scale-[1.01]'}`}
-                style={{ WebkitAppRegion: isResizing ? 'none' : (isClickThrough ? 'none' : 'drag') }}
-            >
-                {/* Top-Right Close Button */}
-                {!isClickThrough && (
-                    <button
-                        onClick={handleClose}
-                        className="absolute top-4 right-4 p-2 bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 rounded-xl transition-all duration-300 no-drag z-50 group/close opacity-0 group-hover:opacity-100"
-                        title="Close Overlay"
-                    >
-                        <X className="w-5 h-5" />
-                    </button>
-                )}
-
-                {/* Top-Left Anchor Handle */}
-                {!isClickThrough && (
-                    <div className="absolute -top-3 -left-3 bg-teal-600 p-1.5 rounded-lg shadow-xl cursor-grab active:cursor-grabbing hover:scale-110 transition-all opacity-0 group-hover:opacity-100">
-                        <GripVertical className="w-5 h-5 text-white" />
-                    </div>
-                )}
-
-                {/* Control Bar (Visible on hover) */}
-                <div className="absolute -top-12 left-1/2 -translate-x-1/2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity no-drag p-2 bg-slate-900/80 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl">
-                    <button onClick={() => handleResize('small')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Small</button>
-                    <button onClick={() => handleResize('medium')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Med</button>
-                    <button onClick={() => handleResize('large')} className="p-2 hover:bg-white/10 rounded-xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white transition-colors">Large</button>
-                    <div className="w-px h-4 bg-white/10 mx-1" />
-                    <button
-                        onClick={toggleClickThrough}
-                        className={`p-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${isClickThrough ? 'bg-teal-600 text-white' : 'hover:bg-white/10 text-slate-400'}`}
-                    >
-                        {isClickThrough ? <Sparkles className="w-3 h-3" /> : null} Mouse Lock
-                    </button>
-                    <div className="w-px h-4 bg-white/10 mx-1" />
-                    <button onClick={handleClose} className="p-2 hover:bg-red-500/20 text-red-400 hover:text-red-300 rounded-xl transition-colors">
-                        <X className="w-4 h-4" />
-                    </button>
+        <div
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
+            className={`relative flex flex-col h-screen w-screen px-10 py-6 overflow-hidden ${isHovered ? 'bg-slate-900/60 backdrop-blur-md border border-white/20' : 'bg-white/[0.005] border border-transparent'}`}
+            style={{ WebkitAppRegion: isResizing || !isHovered ? 'none' : 'drag' }}
+        >
+            {/* Controls */}
+            <div className={`flex items-center justify-end transition-opacity duration-300 ${isHovered ? 'opacity-100' : 'opacity-0'}`}>
+                <div className="flex items-center gap-3 bg-white/20 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10 mr-auto">
+                    <span className="text-xs font-black text-white px-1 uppercase">{sourceLang.split('-')[0]}</span>
+                    <button onClick={swapLangs} className="p-1.5 hover:bg-white/10 rounded-lg text-white" style={{ WebkitAppRegion: 'no-drag' }}><ArrowLeftRight size={14} /></button>
+                    <span className="text-xs font-black text-white px-1 uppercase">{targetLang}</span>
                 </div>
+                <button onClick={() => ipcRenderer?.send('close-overlay')} style={{ WebkitAppRegion: 'no-drag' }} className="p-2 text-white/70 hover:text-white"><X size={24} /></button>
+            </div>
 
-                <div
-                    ref={scrollContainerRef}
-                    className="space-y-4 flex-1 overflow-y-auto pr-26 flex flex-col-reverse custom-scrollbar"
-                >
-                    {isEmpty ? (
-                        <p className="text-white/40 text-xl font-bold italic tracking-tight select-none animate-pulse">
-                            Waiting for input...
-                        </p>
-                    ) : (
-                        subtitleHistory.slice(0, 2).map((sub, idx) => (
-                            <div key={idx} className={`space-y-2 transition-all duration-500 ${idx === 0 ? 'opacity-100 scale-100' : 'opacity-40 scale-95'}`}>
-                                {/* Original Transcription - TOP */}
-                                <p className={`text-white leading-tight tracking-tight drop-shadow-2xl select-none break-words font-extrabold ${idx === 0 ? 'text-3xl' : 'text-xl'}`}>
+            {/* Content: Static text with 100% opacity, white, no outlines */}
+            <div className="flex-1 flex flex-col items-center justify-center text-center space-y-10 select-none">
+                {isEmpty ? (
+                    <p className="text-white/30 text-4xl font-black italic tracking-widest uppercase" style={{ opacity: 1 }}>
+                        {isListening ? 'Listening...' : 'Ready'}
+                    </p>
+                ) : (
+                    <div className="space-y-12 w-full">
+                        {items.map((sub, i) => (
+                            <div key={i} className="scale-100" style={{ opacity: 1 }}>
+                                <p className="text-white font-black text-5xl md:text-6xl tracking-tight leading-tight" style={{ opacity: 1 }}>
                                     {sub.original}
                                 </p>
-
-                                {/* Translation - BOTTOM */}
                                 {sub.translated && (
-                                    <p className={`text-teal-300 font-bold italic select-none break-words leading-relaxed ${idx === 0 ? 'text-xl opacity-90' : 'text-base opacity-60'}`}>
+                                    <p className="text-white font-bold italic text-3xl mt-4" style={{ opacity: 1 }}>
                                         {sub.translated}
                                     </p>
                                 )}
                             </div>
-                        ))
-                    )}
-                </div>
-
-                {!isClickThrough && (
-                    <div
-                        onMouseDown={handleResizeMouseDown}
-                        className="absolute -bottom-3 -right-3 bg-teal-600 p-1.5 rounded-lg shadow-xl cursor-nwse-resize hover:scale-110 transition-all no-drag z-50 opacity-0 group-hover:opacity-100"
-                    >
-                        <Maximize2 className="w-5 h-5 text-white" />
-                    </div>
-                )}
-
-                {/* Manual Scroll Controls */}
-                {!isClickThrough && !isEmpty && (
-                    <>
-                        <div className="absolute right-12 top-12 opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity no-drag z-50">
-                            <button
-                                onClick={() => handleManualScroll('up')}
-                                className="p-3 transition-all bg-slate-800/80 hover:bg-slate-700 text-white/50 hover:text-white rounded-2xl border border-white/10 shadow-2xl backdrop-blur-xl scale-90 hover:scale-110 active:scale-95"
-                                title="Scroll Up"
-                            >
-                                <ChevronUp className="w-6 h-6" />
-                            </button>
-                        </div>
-                        <div className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity no-drag z-50">
-                            <button
-                                onClick={() => handleManualScroll('down')}
-                                className="p-3 transition-all bg-slate-800/80 hover:bg-slate-700 text-white/50 hover:text-white rounded-2xl border border-white/10 shadow-2xl backdrop-blur-xl scale-90 hover:scale-110 active:scale-95"
-                                title="Scroll Down"
-                            >
-                                <ChevronDown className="w-6 h-6" />
-                            </button>
-                        </div>
-                    </>
-                )}
-
-                {!isClickThrough && !isEmpty && (
-                    <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-teal-600/80 text-white text-[9px] px-3 py-1 rounded-full font-bold uppercase tracking-widest shadow-lg opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-md">
-                        Drag to reposition
+                        ))}
                     </div>
                 )}
             </div>
 
-            <style jsx global>{`
-                html, body {
-                    background: transparent !important;
-                    background-color: transparent !important;
-                    overflow: hidden !important;
-                    margin: 0;
-                    padding: 0;
-                    height: 100%;
-                    width: 100%;
-                }
-                .no-scrollbar::-webkit-scrollbar {
-                    display: none;
-                }
-                .no-scrollbar {
-                    -ms-overflow-style: none;
-                    scrollbar-width: none;
-                }
-                .custom-scrollbar::-webkit-scrollbar {
-                    width: 5px;
-                }
-                .custom-scrollbar::-webkit-scrollbar-track {
-                    background: transparent;
-                }
-                .custom-scrollbar::-webkit-scrollbar-thumb {
-                    background: rgba(255, 255, 255, 0.2);
-                    border-radius: 10px;
-                }
-                .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-                    background: rgba(255, 255, 255, 0.3);
-                }
-                .no-drag {
-                    -webkit-app-region: no-drag;
-                }
-            `}</style>
+            {/* Resize */}
+            {isHovered && (
+                <div
+                    onMouseDown={(e) => { setIsResizing(true); resizeStart.current = { x: e.screenX, y: e.screenY, w: window.outerWidth, h: window.outerHeight }; }}
+                    style={{ WebkitAppRegion: 'no-drag' }}
+                    className="absolute bottom-6 right-6 cursor-nwse-resize p-2 text-white/40 hover:text-white"
+                ><Maximize2 size={24} /></div>
+            )}
+
+            {/* Global Mouse Listener for Drag State */}
+            {isResizing && <div className="fixed inset-0 z-[9999] cursor-nwse-resize" onMouseMove={(e) => {
+                const w = Math.max(400, resizeStart.current.w + (e.screenX - resizeStart.current.x));
+                const h = Math.max(150, resizeStart.current.h + (e.screenY - resizeStart.current.y));
+                ipcRenderer?.send('resize-overlay', { width: w, height: h });
+            }} onMouseUp={() => setIsResizing(false)} />}
         </div>
     );
 }
