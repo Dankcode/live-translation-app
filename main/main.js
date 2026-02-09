@@ -2,14 +2,31 @@ const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const { WebSocketServer } = require('ws');
 
 let overlayWindow;
 let mainWindow;
 let macSttProcess = null;
 let wss = null;
+let currentMacSttId = null;
 
 const MAC_STT_APP_BIN = path.join(app.getAppPath(), 'bin/SpeechHost.app/Contents/MacOS/SpeechHost');
+
+/**
+ * Detects the local IPv4 address.
+ */
+function getLocalIP() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
 
 /**
  * Initializes the WebSocket server for Satellite STT.
@@ -25,13 +42,7 @@ function startWebSocketServer() {
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message.toString());
-        if (data.type === 'command') {
-          // Forward command to all other clients and main window
-          broadcastSttCommand(data.command, data.config);
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('satellite-command', data);
-          }
-        } else if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('satellite-transcript', data);
         }
       } catch (e) {
@@ -147,7 +158,7 @@ function createOverlayWindow() {
     frame: false,
     alwaysOnTop: true,
     hasShadow: false,
-    focusable: false,
+    focusable: true,
     resizable: true,
     show: false,
     type: 'panel',
@@ -209,7 +220,13 @@ ipcMain.on('check-satellite-status', (event) => {
   event.reply('satellite-status', wss.clients.size > 0);
 });
 
-function broadcastSttCommand(command, config) {
+ipcMain.on('broadcast-stt-command', (event, { command, config }) => {
+  // 1. Send to Overlay window via IPC (The overlay now acts as the listener)
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send(`${command}-stt`, config);
+  }
+
+  // 2. Broadcast to all WebSocket clients (Legacy Browser Satellite)
   if (wss) {
     const payload = JSON.stringify({ type: 'command', command, config });
     wss.clients.forEach((client) => {
@@ -217,18 +234,6 @@ function broadcastSttCommand(command, config) {
         client.send(payload);
       }
     });
-  }
-}
-
-ipcMain.on('broadcast-stt-command', (event, { command, config }) => {
-  broadcastSttCommand(command, config);
-});
-
-ipcMain.on('satellite-command', (event, data) => {
-  // Command from IPC-connected satellite to everyone else
-  broadcastSttCommand(data.command, data.config);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('satellite-command', data);
   }
 });
 
@@ -256,6 +261,12 @@ ipcMain.on('satellite-data', (event, data) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('satellite-transcript', data);
   }
+  // Also broadcast to all WebSocket clients (Viewer/History Sync)
+  broadcastToViewers(data);
+});
+
+ipcMain.on('broadcast-transcript', (event, data) => {
+  broadcastToViewers(data);
 });
 
 ipcMain.on('send-subtitle', (event, data) => {
@@ -265,9 +276,43 @@ ipcMain.on('send-subtitle', (event, data) => {
   }
 });
 
+ipcMain.on('overlay-hover', (event, isHovered) => {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setIgnoreMouseEvents(!isHovered, { forward: true });
+  }
+});
+
+ipcMain.on('sync-languages', (event, data) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('sync-languages', data);
+  }
+});
+
+ipcMain.on('get-local-ip', (event) => {
+  event.reply('local-ip', getLocalIP());
+});
+
 ipcMain.on('open-external-browser', (event, url) => {
   shell.openExternal(url);
 });
+
+/**
+ * Broadcasts data to all connected WebSocket clients.
+ */
+function broadcastToViewers(data) {
+  if (wss) {
+    const payload = JSON.stringify({
+      type: 'transcript',
+      ...data,
+      timestamp: Date.now() // Use the host computer's time
+    });
+    wss.clients.forEach((client) => {
+      if (client.readyState === 1) { // WebSocket.OPEN
+        client.send(payload);
+      }
+    });
+  }
+}
 
 ipcMain.on('start-mac-stt', async (event, { locale }) => {
   if (process.platform !== 'darwin') {
@@ -296,7 +341,13 @@ ipcMain.on('start-mac-stt', async (event, { locale }) => {
         if (json.error) {
           mainWindow.webContents.send('mac-stt-error', json.error);
         } else if (json.transcript) {
-          mainWindow.webContents.send('mac-stt-transcript', json);
+          if (!currentMacSttId) currentMacSttId = Date.now();
+          const broadcastId = currentMacSttId;
+          if (json.isFinal) currentMacSttId = null;
+
+          mainWindow.webContents.send('mac-stt-transcript', { ...json, id: broadcastId });
+          // Broadcast to LAN viewers
+          broadcastToViewers({ transcript: json.transcript, isFinal: json.isFinal, id: broadcastId });
         }
       } catch (e) {
         console.error('Failed to parse Swift output:', line);

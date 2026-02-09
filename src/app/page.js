@@ -4,8 +4,9 @@ import { useState, useRef, useEffect } from 'react';
 import {
   Mic, MicOff, Monitor, Languages, Sparkles, ChevronDown,
   Key, History, Moon, Sun, X, Settings, GripHorizontal,
-  Globe, Cloud, Cpu, Command
+  Globe, Cloud, Cpu, Command, ArrowLeftRight, QrCode
 } from 'lucide-react';
+import { QRCodeCanvas } from 'qrcode.react';
 import { translateText } from '@/lib/translator';
 
 const { ipcRenderer } = (typeof window !== 'undefined' && typeof window.require === 'function')
@@ -28,14 +29,15 @@ export default function Home() {
   const [sttMode, setSttMode] = useState('satellite');
   const [sttError, setSttError] = useState('');
   const [satelliteReady, setSatelliteReady] = useState(false);
+  const [localIp, setLocalIp] = useState('127.0.0.1');
+  const [showShareQR, setShowShareQR] = useState(false);
 
   // Settings Modal State
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settingsTab, setSettingsTab] = useState('general'); // 'general', 'usage'
+  const [settingsTab, setSettingsTab] = useState('general'); // 'general', 'translation', 'usage', 'share'
 
   const [usageStats, setUsageStats] = useState(null);
   const [isLoadingUsage, setIsLoadingUsage] = useState(false);
-  const [isOverlayLocked, setIsOverlayLocked] = useState(false);
 
   // Theme State
   const [theme, setTheme] = useState('light');
@@ -64,14 +66,18 @@ export default function Home() {
     setTheme(savedTheme);
 
     if (ipcRenderer) {
-      // Listeners
       ipcRenderer.on('overlay-status', (event, visible) => setOverlayVisible(visible));
-      ipcRenderer.on('overlay-lock-status', (event, locked) => setIsOverlayLocked(locked));
       ipcRenderer.on('satellite-status', (event, isReady) => setSatelliteReady(isReady));
+      ipcRenderer.on('local-ip', (event, ip) => setLocalIp(ip));
+      ipcRenderer.on('sync-languages', (event, { sourceLang, targetLang }) => {
+        setSourceLang(sourceLang);
+        setTargetLang(targetLang);
+      });
 
       // Initial Checks
       ipcRenderer.send('get-overlay-status');
       ipcRenderer.send('check-satellite-status');
+      ipcRenderer.send('get-local-ip');
 
       // Poll Satellite Status every 2s
       const pollInterval = setInterval(() => {
@@ -107,16 +113,29 @@ export default function Home() {
     sourceLangRef.current = sourceLang;
   }, [isRecording, targetLang, llmModel, sourceLang]);
 
-  // Satellite Sync (Initial & Language)
+  // Broadcast updates to LAN viewers (History Sync)
   useEffect(() => {
-    if (isRecording && sttMode === 'satellite' && satelliteReady && ipcRenderer) {
-      console.log(`[Main] Syncing satellite state: START [${sourceLang}]`);
+    if (transcriptHistory.length > 0 && ipcRenderer) {
+      const latest = transcriptHistory[0];
+      ipcRenderer.send('broadcast-transcript', {
+        id: latest.id,
+        transcript: latest.original,
+        translated: latest.translated,
+        isFinal: latest.isFinal,
+        timestamp: latest.timestamp
+      });
+    }
+  }, [transcriptHistory]);
+
+  useEffect(() => {
+    if (isRecording && sttMode === 'satellite' && ipcRenderer) {
+      console.log(`[Main] Broadcasting language update: ${sourceLang}`);
       ipcRenderer.send('broadcast-stt-command', {
         command: 'start',
         config: { sourceLang, targetLang, llmModel }
       });
     }
-  }, [sourceLang, satelliteReady, isRecording, sttMode]);
+  }, [sourceLang]);
 
   // Auto-stop recording on STT mode switch
   useEffect(() => {
@@ -142,7 +161,7 @@ export default function Home() {
           if (newHistory.length > 0 && !newHistory[0].isFinal) {
             newHistory[0] = { ...newHistory[0], original, isFinal };
           } else {
-            newHistory.unshift({ original, translated: '', isFinal });
+            newHistory.unshift({ id: now, original, translated: '', isFinal, timestamp: now });
           }
           newHistory = newHistory.slice(0, transcriptLimit);
           setTranscript({ original, translated: newHistory[0].translated || '...' });
@@ -185,14 +204,39 @@ export default function Home() {
             });
         }
       });
-      ipcRenderer.on('satellite-command', (event, data) => {
-        console.log(`[Main] Received command from satellite: ${data.command}`);
-        if (data.command === 'start') {
-          setIsRecording(true);
-        } else if (data.command === 'stop') {
-          // Note: we call stopRecording to ensure cleanup, but avoid loopback if needed
-          // Actually, stopRecording will send a stop command back, which is fine (idempotent)
-          stopRecording();
+
+      ipcRenderer.on('mac-stt-transcript', async (event, data) => {
+        if (!isRecordingRef.current) return;
+        const original = data.transcript;
+        if (!original || !original.trim()) return;
+
+        const now = Date.now();
+        const isFinal = data.isFinal;
+
+        setTranscriptHistory(prev => {
+          let newHistory = [...prev];
+          if (newHistory.length > 0 && !newHistory[0].isFinal) {
+            newHistory[0] = { ...newHistory[0], original, isFinal };
+          } else {
+            newHistory.unshift({ id: now, original, translated: '', isFinal, timestamp: now });
+          }
+          newHistory = newHistory.slice(0, transcriptLimit);
+          setTranscript({ original, translated: newHistory[0].translated || '...' });
+          return newHistory;
+        });
+
+        if (isFinal) {
+          translateText(original, sourceLangRef.current.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey)
+            .then(translated => {
+              setTranscriptHistory(prev => {
+                const newHistory = prev.map(item => (item.original === original && item.isFinal) ? { ...item, translated } : item);
+                if (newHistory.length > 0 && newHistory[0].original === original) {
+                  setTranscript({ original, translated });
+                  if (ipcRenderer) ipcRenderer.send('send-subtitle', newHistory);
+                }
+                return newHistory;
+              });
+            });
         }
       });
     }
@@ -224,7 +268,8 @@ export default function Home() {
           if (!original?.trim()) return;
 
           const translated = await translateText(original, sourceLang.split('-')[0], targetLangRef.current, llmModelRef.current, geminiApiKey);
-          const result = { original, translated, isFinal: true, timestamp: Date.now() };
+          const now = Date.now();
+          const result = { id: now, original, translated, isFinal: true, timestamp: now };
 
           setTranscript(result);
           setTranscriptHistory(prev => [result, ...prev].slice(0, transcriptLimit));
@@ -311,6 +356,34 @@ export default function Home() {
 
   const toggleRecording = () => isRecording ? stopRecording() : startRecording();
   const toggleOverlay = () => ipcRenderer?.send('toggle-overlay');
+
+  const swapLanguages = () => {
+    // Basic mapping for common languages
+    const langToLocale = {
+      'en': 'en-US',
+      'es': 'es-ES',
+      'fr': 'fr-FR',
+      'de': 'de-DE',
+      'zh': 'zh-CN'
+    };
+
+    const newSource = langToLocale[targetLang] || `${targetLang}-US`;
+    const newTarget = sourceLang.split('-')[0];
+
+    setSourceLang(newSource);
+    setTargetLang(newTarget);
+
+    // Broadcast if recording or if overlay is active
+    if (ipcRenderer) {
+      ipcRenderer.send('sync-languages', { sourceLang: newSource, targetLang: newTarget });
+      if (isRecording && sttMode === 'satellite') {
+        ipcRenderer.send('broadcast-stt-command', {
+          command: 'start',
+          config: { sourceLang: newSource, targetLang: newTarget, llmModel }
+        });
+      }
+    }
+  };
 
   const fetchUsageStats = async () => {
     setIsLoadingUsage(true);
@@ -455,8 +528,8 @@ export default function Home() {
               </div>
 
               {/* Languages */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
+              <div className="flex items-end gap-2">
+                <div className="flex-1 space-y-2">
                   <label className="text-[10px] text-text-muted uppercase tracking-widest font-bold">Mic Input</label>
                   <div className="relative">
                     <select
@@ -472,7 +545,16 @@ export default function Home() {
                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-text-muted pointer-events-none" />
                   </div>
                 </div>
-                <div className="space-y-2">
+
+                <button
+                  onClick={swapLanguages}
+                  className="mb-1 p-2.5 rounded-xl bg-bg-input hover:bg-bg-hover border border-border-color text-text-muted hover:text-accent-primary transition-all active:scale-90"
+                  title="Swap Languages"
+                >
+                  <ArrowLeftRight className="w-4 h-4" />
+                </button>
+
+                <div className="flex-1 space-y-2">
                   <label className="text-[10px] text-text-muted uppercase tracking-widest font-bold">Translation</label>
                   <div className="relative">
                     <select
@@ -523,18 +605,59 @@ export default function Home() {
                     : 'bg-bg-input border-transparent text-text-muted hover:bg-bg-hover'
                     }`}
                 >
-                  <span>Overlay</span>
+                  <div className="flex items-center gap-2">
+                    <Monitor className="w-4 h-4" />
+                    <span>Overlay</span>
+                  </div>
                   <div className={`w-1.5 h-1.5 rounded-full ${overlayVisible ? 'bg-accent-primary animate-pulse' : 'bg-slate-400'}`} />
                 </button>
 
                 {overlayVisible && (
                   <div className="grid grid-cols-2 gap-2 animate-in slide-in-from-top-1">
-                    <button onClick={() => ipcRenderer?.send('set-ignore-mouse', !isOverlayLocked)} className={`py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${isOverlayLocked ? 'bg-accent-secondary text-white border-transparent' : 'bg-bg-input text-text-muted border-transparent hover:bg-bg-hover'}`}>
-                      {isOverlayLocked ? 'Unlock' : 'Lock'}
+                    <button onClick={toggleOverlay} className={`py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${overlayVisible ? 'bg-accent-primary text-white border-transparent shadow-custom' : 'bg-bg-input text-text-muted border-transparent hover:bg-bg-hover'}`}>
+                      {overlayVisible ? 'Hide Overlay' : 'Show Overlay'}
                     </button>
                     <button onClick={() => ipcRenderer?.send('close-overlay')} className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-bg-input text-red-500 hover:text-red-600 border border-transparent hover:bg-red-50 dark:hover:bg-red-900/10">
                       Close
                     </button>
+                  </div>
+                )}
+
+                <div className="pt-1 border-t border-border-color/30 my-2" />
+
+                <button
+                  onClick={() => setShowShareQR(!showShareQR)}
+                  className={`w-full py-3 rounded-xl border flex items-center justify-between px-4 text-xs font-bold uppercase tracking-wider transition-all ${showShareQR
+                    ? 'bg-teal-500/10 border-teal-500 text-teal-600'
+                    : 'bg-bg-input border-transparent text-text-muted hover:bg-bg-hover'
+                    }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <QrCode className="w-4 h-4" />
+                    <span>Share via LAN</span>
+                  </div>
+                  <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${showShareQR ? 'rotate-180' : 'opacity-50'}`} />
+                </button>
+
+                {showShareQR && (
+                  <div className="bg-bg-card border border-border-color rounded-2xl p-4 flex flex-col items-center gap-3 shadow-md animate-in zoom-in-95 duration-200">
+                    <div className="bg-white p-2 rounded-xl border border-border-color shadow-sm">
+                      <QRCodeCanvas
+                        value={`http://${localIp}:3000/history`}
+                        size={120}
+                        level="H"
+                        includeMargin={false}
+                      />
+                    </div>
+                    <div className="text-center">
+                      <h4 className="text-[10px] font-bold text-text-main uppercase tracking-widest mb-1">Live History Sharing</h4>
+                      <p className="text-[9px] text-text-muted leading-tight mb-2">
+                        Scan with your phone to read the transcript live
+                      </p>
+                      <code className="bg-bg-input px-2 py-0.5 rounded text-[8px] text-accent-primary font-mono border border-border-color/50">
+                        http://{localIp}:3000/history
+                      </code>
+                    </div>
                   </div>
                 )}
               </div>
@@ -715,6 +838,30 @@ export default function Home() {
                       <p className="text-sm text-text-muted">No usage data available.</p>
                     </div>
                   )}
+                </div>
+              )}
+
+              {settingsTab === 'share' && (
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300 flex-1 flex flex-col items-center justify-center p-4">
+                  <div className="bg-white p-4 rounded-2xl shadow-xl border border-border-color">
+                    <QRCodeCanvas
+                      value={`http://${localIp}:3000/history`}
+                      size={200}
+                      level="H"
+                      includeMargin={true}
+                    />
+                  </div>
+                  <div className="text-center space-y-2 max-w-[280px]">
+                    <h4 className="text-lg font-bold text-text-main">Scan to View History</h4>
+                    <p className="text-xs text-text-muted leading-relaxed">
+                      Anyone on your network can scan this code to read the live transcript on their device.
+                    </p>
+                    <div className="pt-2">
+                      <code className="bg-bg-input px-2 py-1 rounded-md text-[10px] text-accent-primary font-bold">
+                        http://{localIp}:3000/history
+                      </code>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
