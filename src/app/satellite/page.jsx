@@ -166,7 +166,6 @@ export default function SatellitePage() {
             socket.onopen = () => {
                 addLog("Cloud Bridge connected.");
                 setStatus("Ready");
-                executeStart();
             };
 
             socket.onmessage = (event) => {
