@@ -286,6 +286,18 @@ ipcMain.on('sync-languages', (event, data) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('sync-languages', data);
   }
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('sync-languages', data);
+  }
+});
+
+ipcMain.on('open-devtools', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.openDevTools({ mode: 'detach' });
+  }
 });
 
 ipcMain.on('get-local-ip', (event) => {

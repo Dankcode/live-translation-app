@@ -31,6 +31,7 @@ export default function Home() {
   const [satelliteReady, setSatelliteReady] = useState(false);
   const [localIp, setLocalIp] = useState('127.0.0.1');
   const [showShareQR, setShowShareQR] = useState(false);
+  const [transcriptFontSize, setTranscriptFontSize] = useState(1.0);
 
   // Settings Modal State
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -60,9 +61,11 @@ export default function Home() {
     const savedGemini = localStorage.getItem('google_gemini_api_key');
     const savedCloud = localStorage.getItem('google_cloud_stt_api_key');
     const savedTheme = localStorage.getItem('app_theme') || 'light';
+    const savedTranscriptSize = localStorage.getItem('transcript_font_size');
 
     if (savedGemini) setGeminiApiKey(savedGemini);
     if (savedCloud) setCloudApiKey(savedCloud);
+    if (savedTranscriptSize) setTranscriptFontSize(parseFloat(savedTranscriptSize));
     setTheme(savedTheme);
 
     if (ipcRenderer) {
@@ -99,11 +102,12 @@ export default function Home() {
     localStorage.setItem('app_theme', theme);
   }, [theme]);
 
-  // Save Keys
+  // Save Settings
   useEffect(() => {
     localStorage.setItem('google_gemini_api_key', geminiApiKey);
     localStorage.setItem('google_cloud_stt_api_key', cloudApiKey);
-  }, [geminiApiKey, cloudApiKey]);
+    localStorage.setItem('transcript_font_size', transcriptFontSize.toString());
+  }, [geminiApiKey, cloudApiKey, transcriptFontSize]);
 
   // Sync Refs
   useEffect(() => {
@@ -533,7 +537,12 @@ export default function Home() {
                   <label className="text-[10px] text-text-muted uppercase tracking-widest font-bold">Mic Input</label>
                   <div className="relative">
                     <select
-                      value={sourceLang} onChange={e => setSourceLang(e.target.value)}
+                      value={sourceLang}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setSourceLang(val);
+                        ipcRenderer?.send('sync-languages', { sourceLang: val, targetLang });
+                      }}
                       className="w-full appearance-none bg-bg-input hover:bg-bg-hover border border-border-color rounded-xl p-3 pr-8 text-xs font-bold text-text-main cursor-pointer focus:ring-2 focus:ring-accent-primary/20 outline-none transition-colors"
                     >
                       <option value="en-US">English (US)</option>
@@ -558,7 +567,12 @@ export default function Home() {
                   <label className="text-[10px] text-text-muted uppercase tracking-widest font-bold">Translation</label>
                   <div className="relative">
                     <select
-                      value={targetLang} onChange={e => setTargetLang(e.target.value)}
+                      value={targetLang}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setTargetLang(val);
+                        ipcRenderer?.send('sync-languages', { sourceLang, targetLang: val });
+                      }}
                       className="w-full appearance-none bg-bg-input hover:bg-bg-hover border border-border-color rounded-xl p-3 pr-8 text-xs font-bold text-text-main cursor-pointer focus:ring-2 focus:ring-accent-primary/20 outline-none transition-colors"
                     >
                       <option value="es">Spanish</option>
@@ -613,9 +627,12 @@ export default function Home() {
                 </button>
 
                 {overlayVisible && (
-                  <div className="grid grid-cols-2 gap-2 animate-in slide-in-from-top-1">
+                  <div className="grid grid-cols-3 gap-2 animate-in slide-in-from-top-1">
                     <button onClick={toggleOverlay} className={`py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${overlayVisible ? 'bg-accent-primary text-white border-transparent shadow-custom' : 'bg-bg-input text-text-muted border-transparent hover:bg-bg-hover'}`}>
                       {overlayVisible ? 'Hide Overlay' : 'Show Overlay'}
+                    </button>
+                    <button onClick={() => ipcRenderer?.send('open-devtools')} className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-bg-input text-text-main border border-transparent hover:bg-bg-hover">
+                      Log
                     </button>
                     <button onClick={() => ipcRenderer?.send('close-overlay')} className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-bg-input text-red-500 hover:text-red-600 border border-transparent hover:bg-red-50 dark:hover:bg-red-900/10">
                       Close
@@ -671,9 +688,29 @@ export default function Home() {
                 <Sparkles className="w-5 h-5 text-accent-primary" />
                 Live Transcript
               </h2>
-              <button onClick={clearTranscript} className="text-[10px] font-bold text-text-muted hover:text-accent-primary transition-colors uppercase tracking-wider">
-                Clear History
-              </button>
+
+              <div className="flex items-center gap-4">
+                {/* Transcript Size Slider */}
+                <div className="flex items-center gap-2 bg-bg-input/50 px-3 py-1.5 rounded-full border border-border-color/30">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-text-muted">Size</span>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.1"
+                    value={transcriptFontSize}
+                    onChange={(e) => setTranscriptFontSize(parseFloat(e.target.value))}
+                    className="w-20 h-1 bg-border-color rounded-full appearance-none cursor-pointer accent-accent-primary"
+                  />
+                  <span className="text-[9px] font-mono font-bold text-accent-primary w-6">{Math.round(transcriptFontSize * 100)}%</span>
+                </div>
+
+                <div className="h-4 w-px bg-border-color/50" />
+
+                <button onClick={clearTranscript} className="text-[10px] font-bold text-text-muted hover:text-accent-primary transition-colors uppercase tracking-wider">
+                  Clear
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-4">
@@ -684,23 +721,25 @@ export default function Home() {
                 </div>
               ) : (
                 transcriptHistory.map((item, idx) => (
-                  <div key={idx} className={`p-5 rounded-2xl transition-all ${idx === 0
-                    ? 'bg-bg-input border border-border-color shadow-sm'
-                    : 'opacity-50 grayscale'
+                  <div key={idx} className={`p-3 rounded-xl transition-all ${idx === 0
+                    ? 'bg-bg-input border border-border-color shadow-sm ring-1 ring-accent-primary/5'
+                    : 'opacity-40 grayscale scale-[0.98] origin-top'
                     }`}>
-                    <div className="flex flex-col gap-4">
+                    <div className="flex flex-col gap-1.5">
                       {/* Original */}
-                      <div>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-accent-primary opacity-60 block mb-1">Transcription</span>
-                        <p className="text-base font-bold text-text-main leading-relaxed">
-                          {item.original}
-                        </p>
-                      </div>
+                      <p
+                        className="text-accent-primary font-bold leading-tight"
+                        style={{ fontSize: `${14 * transcriptFontSize}px` }}
+                      >
+                        {item.original}
+                      </p>
 
                       {/* Translated */}
-                      <div className={`pt-3 border-t border-border-color/50 ${!item.translated && !item.isFinal ? 'hidden' : ''}`}>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-teal-500 opacity-60 block mb-1">Translation</span>
-                        <p className={`font-bold leading-relaxed text-text-main ${idx === 0 ? 'text-xl' : 'text-base'}`}>
+                      <div className={`${!item.translated && !item.isFinal ? 'hidden' : ''}`}>
+                        <p
+                          className="font-black leading-snug text-text-main"
+                          style={{ fontSize: `${idx === 0 ? 18 * transcriptFontSize : 14 * transcriptFontSize}px` }}
+                        >
                           {item.translated || (item.isFinal ? 'Translating...' : '...')}
                         </p>
                       </div>
