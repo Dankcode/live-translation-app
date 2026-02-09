@@ -723,7 +723,7 @@ export default function Home() {
                 transcriptHistory.map((item, idx) => (
                   <div key={idx} className={`p-3 rounded-xl transition-all ${idx === 0
                     ? 'bg-bg-input border border-border-color shadow-sm ring-1 ring-accent-primary/5'
-                    : 'opacity-40 grayscale scale-[0.98] origin-top'
+                    : 'bg-bg-input/30 opacity-70 border border-transparent'
                     }`}>
                     <div className="flex flex-col gap-1.5">
                       {/* Original */}
