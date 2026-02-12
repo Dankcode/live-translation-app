@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Live translation and subtitle overlay application",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_USERNAME/YOUR_REPO.git"
+  },
   "author": "ryuuna",
   "main": "main/main.js",
   "scripts": {

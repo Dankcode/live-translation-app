@@ -1,33 +1,50 @@
-Hybrid Implementation Plan - Transparent Full-Screen Overlay
-This plan resolves the current limitations by separating the Speech Recognition (which works best in a standard browser) from the Subtitle Overlay (which requires Electron for transparency and "above full-screen" behavior).
+# Scribe Center 🎙️✨
 
-User Review Required
-IMPORTANT
+Scribe Center is a powerful, real-time speech-to-text and translation application designed for seamless presentations. It provides a transparent, always-on-top overlay for subtitles, making it perfect for PowerPoint, Keynote, or live video streaming.
 
-Why this approach?:
+## ✨ Features
 
-Browsers cannot do truly transparent windows or stay on top of full-screen PowerPoint.
-Electron cannot do the "free" browser speech recognition without a cloud API key. The Solution: You will open a regular Chrome browser tab to use the microphone. Simultaneously, a small Electron app will run to show the transparent subtitles on top of your PowerPoint. They will talk to each other automatically.
-Proposed Changes
-1. Unified Local Server (Next.js)
-Implement a WebSocket server (using socket.io or simple 
-ws
-) within the Next.js dev server.
-The browser tab sends transcripts to this server.
-The Electron window receives and displays them.
-2. Transparent Electron Window [NEW/RESTORED]
-Create a minimal Electron setup that only opens a fully transparent, always-on-top window.
-This window will have ignoreMouseEvents(true) to avoid blocking PowerPoint clicks.
-3. Speech Recognition Tab (Chrome)
-Update 
-page.js
- to be the "Control Center".
-It captures the microphone using the Web Speech API (Free/Native).
-It emits the text to the local WebSocket server.
-Verification Plan
-Manual Verification
-Launch: Start the server and Electron.
-Recognition: Open localhost:3000 in Chrome and start the mic.
-Overlay: Verify a transparent subtitle appears on the screen.
-Full Screen Test: Open PowerPoint in Slide Show mode. Verify subtitles stay on top and are transparent.
-Transparency: Ensure no box/frame is visible around the text.
+- **Live Subtitle Overlay**: Fully transparent window that stays on top of full-screen applications.
+- **Multi-Engine STT**: Support for Web Speech API (Free), Google Cloud STT, Gemini Multimodal, and Native macOS Dictation.
+- **Real-Time Translation**: Powered by Google Translate and AI refinement via Gemini.
+- **LAN History Sharing**: Scan a QR code to read the live transcript on your phone or tablet.
+- **History Log**: Instant access to previous transcriptions with host-synchronized timestamps.
+
+## 🚀 Getting Started
+
+### Installation
+
+#### macOS
+1. Download the latest `Scribe.Center-x.x.x.dmg` from the [Releases](https://github.com/YOUR_USERNAME/YOUR_REPO/releases) page.
+2. Drag Scribe Center to your Applications folder.
+3. **Note**: If you see a "developer cannot be verified" warning, right-click the app and select **Open**.
+
+#### Windows
+1. Download `Scribe.Center.Setup.x.x.x.exe` from the [Releases](https://github.com/YOUR_USERNAME/YOUR_REPO/releases) page.
+2. Run the installer and follow the prompts.
+
+### Usage
+
+1. **Launch the App**: Open Scribe Center on your host computer.
+2. **Start Transcription**: Select your source and target languages, then click **Start Translation**.
+3. **Toggle Overlay**: Click the **Overlay** button to show the transparent subtitles. You can drag and resize the overlay as needed.
+4. **Satellite Mode (Optional)**: If using the "Satellite" engine, click **Launch Now** to open the microphone controller in your browser.
+
+## 🛠️ Development
+
+If you want to build Scribe Center from source:
+
+```bash
+# Install dependencies
+npm install
+
+# Run in development mode
+npm run dev:hybrid
+
+# Build for production
+npm run electron:build
+```
+
+## 📄 License
+
+MIT
