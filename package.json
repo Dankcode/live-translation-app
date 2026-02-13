@@ -60,7 +60,15 @@
       "target": "dmg"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "publisherName": "Scribe Center Team"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "installerIcon": "public/favicon.ico",
+      "uninstallerIcon": "public/favicon.ico"
     }
   }
 }

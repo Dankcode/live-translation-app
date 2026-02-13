@@ -14,14 +14,20 @@ Scribe Center is a powerful, real-time speech-to-text and translation applicatio
 
 ### Installation
 
-#### macOS
-1. Download the latest `Scribe.Center-x.x.x.dmg` from the [Releases](https://github.com/YOUR_USERNAME/YOUR_REPO/releases) page.
-2. Drag Scribe Center to your Applications folder.
-3. **Note**: If you see a "developer cannot be verified" warning, right-click the app and select **Open**.
+#### 📦 Download the Setup Installer
+To get the latest version for your computer:
+1. Go to the [Releases](https://github.com/YOUR_USERNAME/YOUR_REPO/releases) page.
+2. Download the **Setup Installer** for your platform:
+   - **Windows**: `Scribe.Center.Setup.x.x.x.exe` (Runs the NSIS setup wizard).
+   - **macOS**: `Scribe.Center-x.x.x-arm64.dmg` (Standard disk image).
 
-#### Windows
-1. Download `Scribe.Center.Setup.x.x.x.exe` from the [Releases](https://github.com/YOUR_USERNAME/YOUR_REPO/releases) page.
-2. Run the installer and follow the prompts.
+#### 🛠️ Publishing a New Release (Standard Procedure)
+This project follows the standard industry procedure for GitHub releases to keep the repository size small:
+1. **Push Source Code**: Push your code changes to GitHub (large folders like `dist/` and `node_modules/` are automatically excluded via `.gitignore`).
+2. **Pack the App**: Run `npm run electron:build` locally on your computer.
+3. **Create Release**: On GitHub, go to **Releases** -> **Draft a new release**.
+4. **Upload Assets**: Drag and drop the generated `.exe` or `.dmg` from your local `dist` folder into the "Attach binaries" section. GitHub allows files up to 2GB here!
+5. **Publish**: Click **Publish release**.
 
 ### Usage
 
