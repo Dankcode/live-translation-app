@@ -17,6 +17,15 @@
 /.next/
 /out/
 
+# vite
+/dist/
+
+# electron-builder
+/dist-electron/
+
+# local build/cache artifacts
+/.tmp/
+
 # production
 /build
 

@@ -1,0 +1,9 @@
+# electron-builder will prefer this file over .gitignore.
+# Keep renderer build output included (dist/), since the packaged app loads it.
+
+.git/
+.next/
+dist-electron/
+.agent/
+agent/
+.DS_Store

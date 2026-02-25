@@ -1,16 +1,58 @@
 {
-  "name": "live-translation-app-local",
+  "name": "scribe-center",
   "version": "1.0.0",
+  "private": true,
   "description": "Live Translation Desktop Application",
   "main": "main.js",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
     "start": "electron .",
-    "dev": "electron . --dev"
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:build": "vite build && USE_HARD_LINKS=false electron-builder",
+    "electron:pack": "vite build && USE_HARD_LINKS=false electron-builder --dir"
   },
-  "keywords": [],
-  "author": "",
-  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "lucide-react": "^0.562.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "ws": "^8.19.0"
+  },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "@tailwindcss/vite": "^4",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.2.1",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.4.0",
+    "tailwindcss": "^4",
+    "vite": "^6.0.0",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.scribe.center",
+    "productName": "Scribe Center",
+    "disableDefaultIgnoredFiles": true,
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "dist"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    }
   }
 }
