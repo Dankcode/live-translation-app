@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { History, Download, Trash2, ArrowLeft, Languages } from 'lucide-react';
+import { useTranslation } from '../lib/i18n';
 
 export default function HistoryPage() {
+    const { t } = useTranslation();
     const [history, setHistory] = useState([]);
     const [isHydrated, setIsHydrated] = useState(false);
 
@@ -62,7 +64,7 @@ export default function HistoryPage() {
     }, []);
 
     const clearHistory = () => {
-        if (confirm('Are you sure you want to clear all history?')) {
+        if (confirm(t('history.confirm_clear'))) {
             localStorage.removeItem('scribe_transcript_history');
             setHistory([]);
         }
@@ -111,7 +113,7 @@ export default function HistoryPage() {
                             <div className="p-2 bg-accent-primary rounded-xl text-white shadow-lg">
                                 <History className="w-6 h-6" />
                             </div>
-                            <h1 className="text-2xl font-bold tracking-tight">Translation History</h1>
+                            <h1 className="text-2xl font-bold tracking-tight">{t('history.title')}</h1>
                         </div>
                     </div>
 
@@ -122,7 +124,7 @@ export default function HistoryPage() {
                             className="flex items-center gap-2 px-4 py-2 bg-bg-card border border-border-color rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-bg-hover transition-all disabled:opacity-50"
                         >
                             <Download className="w-4 h-4" />
-                            Export TXT
+                            {t('history.export')}
                         </button>
                         <button
                             onClick={clearHistory}
@@ -130,7 +132,7 @@ export default function HistoryPage() {
                             className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-xs font-bold uppercase tracking-wider text-red-500 hover:bg-red-50/20 transition-all disabled:opacity-50"
                         >
                             <Trash2 className="w-4 h-4" />
-                            Clear All
+                            {t('history.clear_all')}
                         </button>
                     </div>
                 </header>
@@ -141,7 +143,7 @@ export default function HistoryPage() {
                             <div className="flex justify-center">
                                 <History className="w-16 h-16 text-text-muted opacity-20" />
                             </div>
-                            <p className="text-text-muted">No translation history found yet.</p>
+                            <p className="text-text-muted">{t('history.empty')}</p>
                         </div>
                     ) : (
                         history.map((item, idx) => (
@@ -160,11 +162,11 @@ export default function HistoryPage() {
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div>
-                                        <span className="text-[9px] font-black uppercase tracking-widest text-accent-primary opacity-60 block mb-1">Original</span>
+                                        <span className="text-[9px] font-black uppercase tracking-widest text-accent-primary opacity-60 block mb-1">{t('history.original')}</span>
                                         <p className="text-sm font-medium leading-relaxed">{item.original}</p>
                                     </div>
                                     <div className="md:border-l md:border-border-color/50 md:pl-6">
-                                        <span className="text-[9px] font-black uppercase tracking-widest text-teal-500 opacity-60 block mb-1">Translation</span>
+                                        <span className="text-[9px] font-black uppercase tracking-widest text-teal-500 opacity-60 block mb-1">{t('history.translation')}</span>
                                         <p className="text-sm font-bold text-text-main leading-relaxed">{item.translated || (item.isFinal === false ? '...' : '')}</p>
                                     </div>
                                 </div>

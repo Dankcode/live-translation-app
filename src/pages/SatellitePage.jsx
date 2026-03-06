@@ -3,12 +3,14 @@ import {
     Mic, MicOff, Terminal, ChevronDown, ChevronUp,
     Activity, Globe, Zap, Settings, ShieldCheck
 } from 'lucide-react';
+import { useTranslation } from '../lib/i18n';
 
 /**
  * Satellite Page Component
  * Handles the browser's native Web Speech API (Free STT) and sends data back to Electron via WebSocket or IPC.
  */
 export default function SatellitePage() {
+    const { t } = useTranslation();
     const [status, setStatus] = useState('Standby');
     const [isActive, setIsActive] = useState(false);
     const [logs, setLogs] = useState([]);
@@ -45,7 +47,7 @@ export default function SatellitePage() {
 
         recognition.onstart = () => {
             addLog("Audio stream initialized.");
-            setStatus("Listening");
+            setStatus("listening");
             setIsActive(true);
             isRecognitionRunningRef.current = true;
         };
@@ -87,7 +89,7 @@ export default function SatellitePage() {
             if (event.error === 'no-speech') return; // Suppress no-speech
             addLog(`Recognition error: ${event.error}`);
             if (event.error === 'not-allowed') {
-                setStatus("Access Denied");
+                setStatus("denied");
             }
         };
 
@@ -109,7 +111,7 @@ export default function SatellitePage() {
                 }, 200);
             } else {
                 addLog("Audio stream closed.");
-                setStatus("Standby");
+                setStatus("standby");
                 setIsActive(false);
             }
         };
@@ -163,7 +165,7 @@ export default function SatellitePage() {
 
             socket.onopen = () => {
                 addLog("Cloud Bridge connected.");
-                setStatus("Ready");
+                setStatus("ready");
             };
 
             socket.onmessage = (event) => {
@@ -183,7 +185,7 @@ export default function SatellitePage() {
 
             socket.onclose = () => {
                 addLog("Cloud Bridge offline.");
-                setStatus("Disconnected");
+                setStatus("disconnected");
                 executeStop();
             };
 
@@ -202,7 +204,7 @@ export default function SatellitePage() {
                     <Globe className="w-5 h-5" />
                 </div>
                 <div className="flex flex-col">
-                    <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">Satellite Node</span>
+                    <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">{t('satellite.node')}</span>
                     <span className="text-xs font-bold font-mono">NODE_8080_ACTIVE</span>
                 </div>
             </div>
@@ -223,7 +225,7 @@ export default function SatellitePage() {
                     {/* Inner Core */}
                     <div className={`w-36 h-36 rounded-full flex flex-col items-center justify-center transition-all duration-500 shadow-2xl ${isActive ? 'bg-teal-500 text-white shadow-teal-500/20' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 shadow-none'}`}>
                         {isActive ? <Mic className="w-10 h-10 animate-bounce" /> : <MicOff className="w-10 h-10" />}
-                        <span className="mt-3 text-[10px] font-black uppercase tracking-widest">{status}</span>
+                        <span className="mt-3 text-[10px] font-black uppercase tracking-widest">{t(`satellite.status.${status}`)}</span>
                     </div>
 
                     {/* Wave Sprites */}
@@ -245,7 +247,7 @@ export default function SatellitePage() {
                 >
                     <div className="flex items-center gap-3">
                         <Terminal className="w-4 h-4" />
-                        <span className="text-xs font-bold uppercase tracking-widest">Live System Logs</span>
+                        <span className="text-xs font-bold uppercase tracking-widest">{t('satellite.logs.title')}</span>
                     </div>
                     {showLogs ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" />}
                 </button>
@@ -254,11 +256,11 @@ export default function SatellitePage() {
                     <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-2xl">
                         <div className="flex items-center gap-2 mb-4">
                             <Zap className="w-3 h-3 text-teal-400" />
-                            <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Debug Stream</span>
+                            <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">{t('satellite.logs.debug')}</span>
                         </div>
                         <div className="h-48 overflow-y-auto custom-scrollbar space-y-2 pr-2">
                             {logs.length === 0 ? (
-                                <div className="h-full flex items-center justify-center text-zinc-700 text-[10px] italic">No logs generated yet...</div>
+                                <div className="h-full flex items-center justify-center text-zinc-700 text-[10px] italic">{t('satellite.logs.empty')}</div>
                             ) : (
                                 logs.map((log, i) => (
                                     <div key={i} className="flex gap-3 text-[11px] font-mono leading-relaxed border-l border-zinc-800 pl-3">
@@ -274,12 +276,12 @@ export default function SatellitePage() {
                 <div className="flex items-center justify-center gap-6 pt-4 text-zinc-400 dark:text-zinc-600">
                     <div className="flex items-center gap-2">
                         <ShieldCheck className="w-3.5 h-3.5" />
-                        <span className="text-[10px] font-bold uppercase tracking-tighter">Secure Engine</span>
+                        <span className="text-[10px] font-bold uppercase tracking-tighter">{t('satellite.secure_engine')}</span>
                     </div>
                     <div className="w-1 h-1 bg-zinc-300 dark:bg-zinc-700 rounded-full" />
                     <div className="flex items-center gap-2">
                         <Zap className="w-3.5 h-3.5" />
-                        <span className="text-[10px] font-bold uppercase tracking-tighter">Low Latency</span>
+                        <span className="text-[10px] font-bold uppercase tracking-tighter">{t('satellite.low_latency')}</span>
                     </div>
                 </div>
             </div>
