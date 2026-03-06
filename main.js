@@ -330,6 +330,15 @@ ipcMain.on('sync-languages', (event, data) => {
   }
 });
 
+ipcMain.on('sync-interface-language', (event, locale) => {
+  if (mainWindow && !mainWindow.isDestroyed() && event.sender !== mainWindow.webContents) {
+    mainWindow.webContents.send('sync-interface-language', locale);
+  }
+  if (overlayWindow && !overlayWindow.isDestroyed() && event.sender !== overlayWindow.webContents) {
+    overlayWindow.webContents.send('sync-interface-language', locale);
+  }
+});
+
 ipcMain.on('open-devtools', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.openDevTools({ mode: 'detach' });

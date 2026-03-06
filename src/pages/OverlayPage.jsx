@@ -1,11 +1,13 @@
 import { useEffect, useState, useRef } from 'react';
 import { X, Maximize2, ArrowLeftRight, Settings as SettingsIcon, Sparkles } from 'lucide-react';
+import { useTranslation } from '../lib/i18n';
 
 const { ipcRenderer } = typeof window !== 'undefined' && typeof window.require === 'function'
     ? window.require('electron')
     : { ipcRenderer: null };
 
 export default function OverlayPage() {
+    const { t } = useTranslation();
     const [subtitleHistory, setSubtitleHistory] = useState([]);
     const [isHovered, setIsHovered] = useState(false);
     const [isListening, setIsListening] = useState(false);
@@ -201,7 +203,7 @@ export default function OverlayPage() {
                         {/* Opacity Slider */}
                         <div className="space-y-3">
                             <div className="flex items-center justify-between">
-                                <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Opacity</span>
+                                <span className="text-[10px] font-black uppercase tracking-widest text-white/40">{t('overlay.opacity')}</span>
                                 <span className="text-xs font-mono text-white/80">{Math.round(bgOpacity * 100)}%</span>
                             </div>
                             <input
@@ -218,7 +220,7 @@ export default function OverlayPage() {
                         {/* Font Size Slider */}
                         <div className="space-y-3">
                             <div className="flex items-center justify-between">
-                                <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Font Size</span>
+                                <span className="text-[10px] font-black uppercase tracking-widest text-white/40">{t('overlay.font_size')}</span>
                                 <span className="text-xs font-mono text-white/80">{Math.round(fontSize * 100)}%</span>
                             </div>
                             <input
@@ -234,7 +236,7 @@ export default function OverlayPage() {
 
                         {/* Languages */}
                         <div className="space-y-3">
-                            <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Language Sync</span>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-white/40">{t('overlay.lang_sync')}</span>
                             <div className="flex items-center justify-between bg-white/5 p-3 rounded-xl border border-white/5">
                                 <span className="text-xs font-black text-white/90 uppercase">{sourceLang.split('-')[0]}</span>
                                 <button onClick={swapLangs} className="p-1.5 hover:bg-white/10 rounded-lg text-white/60 hover:text-white transition-all"><ArrowLeftRight size={14} /></button>
@@ -246,7 +248,7 @@ export default function OverlayPage() {
                         <div className="flex items-center gap-2 pt-2 border-t border-white/5">
                             <div className={`w-1.5 h-1.5 rounded-full ${isListening ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`} />
                             <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">
-                                {isListening ? 'Stream Active' : 'System Ready'}
+                                {isListening ? t('overlay.status.active') : t('overlay.status.ready')}
                             </span>
                         </div>
                     </div>
@@ -259,7 +261,7 @@ export default function OverlayPage() {
                     <div className="flex flex-col items-center gap-4">
                         <Sparkles className={`w-8 h-8 ${isListening ? 'text-white/60' : 'text-white/20'}`} />
                         <p className="text-white/30 text-2xl font-black italic tracking-widest uppercase">
-                            {isListening ? 'Listening...' : 'Ready'}
+                            {isListening ? t('overlay.listening') : t('overlay.ready')}
                         </p>
                     </div>
                 ) : (

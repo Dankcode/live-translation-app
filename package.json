@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Live Translation Desktop Application",
+  "author": "Ryuuna",
   "main": "main.js",
   "scripts": {
     "dev": "vite",
@@ -32,14 +33,16 @@
   },
   "build": {
     "appId": "com.scribe.center",
-    "productName": "Scribe Center",
-    "disableDefaultIgnoredFiles": true,
+    "productName": "ScribeCenter",
+    "electronDist": "node_modules/electron/dist",
+    "asar": false,
     "directories": {
       "output": "dist-electron"
     },
     "files": [
       "main.js",
-      "package.json"
+      "package.json",
+      "dist/**/*"
     ],
     "extraResources": [
       {
