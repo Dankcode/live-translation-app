@@ -85,7 +85,7 @@ struct ContentView: View {
     
     var body: some View {
         VStack {
-            Text("Scribe Center Speech Host")
+            Text("dual-live-translations Speech Host")
                 .font(.headline)
             Text("This window can be minimized.")
                 .font(.subheadline)

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 
 /**
  * Satellite Page Component
@@ -19,9 +19,9 @@ export default function SatellitePage() {
     ? window.require('electron').ipcRenderer
     : null;
 
-  const addLog = (msg) => {
+  const addLog = useCallback((msg) => {
     setLogs(prev => [...prev.slice(-20), msg]); // Keep last 20 logs
-  };
+  }, []);
 
   useEffect(() => {
     // Initialize Speech Recognition
@@ -87,8 +87,11 @@ export default function SatellitePage() {
         }
       };
     } else {
-      addLog("Error: Web Speech API not supported.");
-      setStatus("Not Supported");
+      const unsupportedTimer = window.setTimeout(() => {
+        addLog("Error: Web Speech API not supported.");
+        setStatus("Not Supported");
+      }, 0);
+      return () => window.clearTimeout(unsupportedTimer);
     }
 
     // Handle IPC Commands from Electron Main
@@ -117,7 +120,7 @@ export default function SatellitePage() {
         ipc.removeAllListeners('stop-stt');
       }
     };
-  }, [ipc]);
+  }, [addLog, ipc]);
 
   return (
     <div className="min-h-screen bg-[#0a0f1c] text-slate-300 font-sans flex items-center justify-center p-6">

@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Scribe Center requires microphone access for speech-to-text translation.</string>
+    <string>dual-live-translations requires microphone access for speech-to-text translation.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Scribe Center requires speech recognition access to transcribe your speech natively on macOS.</string>
+    <string>dual-live-translations requires speech recognition access to transcribe your speech natively on macOS.</string>
 </dict>
 </plist>

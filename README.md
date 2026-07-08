@@ -1,33 +1,40 @@
-Hybrid Implementation Plan - Transparent Full-Screen Overlay
-This plan resolves the current limitations by separating the Speech Recognition (which works best in a standard browser) from the Subtitle Overlay (which requires Electron for transparency and "above full-screen" behavior).
+# LingoLoop
 
-User Review Required
-IMPORTANT
+`LingoLoop` is a Next.js and Electron project for watching imported video with clearer dual-language subtitles, loop-first study tools, sidecar subtitle parsing, batch translation, and a local transcription pipeline.
 
-Why this approach?:
+The current implementation follows the newer `LINGOLOOP_PLAN.md` direction while keeping the working `dual-live-translations` codebase:
 
-Browsers cannot do truly transparent windows or stay on top of full-screen PowerPoint.
-Electron cannot do the "free" browser speech recognition without a cloud API key. The Solution: You will open a regular Chrome browser tab to use the microphone. Simultaneously, a small Electron app will run to show the transparent subtitles on top of your PowerPoint. They will talk to each other automatically.
-Proposed Changes
-1. Unified Local Server (Next.js)
-Implement a WebSocket server (using socket.io or simple 
-ws
-) within the Next.js dev server.
-The browser tab sends transcripts to this server.
-The Electron window receives and displays them.
-2. Transparent Electron Window [NEW/RESTORED]
-Create a minimal Electron setup that only opens a fully transparent, always-on-top window.
-This window will have ignoreMouseEvents(true) to avoid blocking PowerPoint clicks.
-3. Speech Recognition Tab (Chrome)
-Update 
-page.js
- to be the "Control Center".
-It captures the microphone using the Web Speech API (Free/Native).
-It emits the text to the local WebSocket server.
-Verification Plan
-Manual Verification
-Launch: Start the server and Electron.
-Recognition: Open localhost:3000 in Chrome and start the mic.
-Overlay: Verify a transparent subtitle appears on the screen.
-Full Screen Test: Open PowerPoint in Slide Show mode. Verify subtitles stay on top and are transparent.
-Transparency: Ensure no box/frame is visible around the text.
+- Import video or audio and preview it in a subtitle-focused viewer.
+- Try a bundled smoke-test path that loads sample cues while the local whisper.cpp assets are being prepared.
+- Import `.srt`, `.vtt`, `.ass`, or `.ssa` sidecar subtitles.
+- Display original text, reading text, and translated text with legible cinema, boxed, and minimal subtitle styles.
+- Surface the planned FFmpeg + whisper.cpp local transcription health checks and setup/repair path.
+- Mine active subtitle loops into built-in FSRS-style review cards and expose Study-mode loop tools.
+- Simulate the planned fast/balanced/best ASR pipeline with audio cleanup controls, diarization, mixed-language mode, batching, concurrency, and cache settings.
+- Load batch manifests from `.json`, `.csv`, or `.txt` and track resumable queue progress.
+- Cover or blur burned-in subtitle regions with a live preview mask that maps to export filter metadata.
+- Export dual SRT, styled ASS, project JSON, and batch report CSV files.
+
+## Local transcription setup
+
+The LingoLoop plan moves primary transcription out of the browser and into a local FFmpeg + `whisper.cpp` worker. Run:
+
+```bash
+sh scripts/setup-whisper.sh
+```
+
+Then place `whisper-cli`, `ffmpeg`, `ffprobe`, and `~/.lingoloop/models/ggml-base.bin` where the setup output expects them. The Audio & Recognition settings panel reports readiness.
+
+## Development
+
+```bash
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+## Build
+
+```bash
+npm run build
+```

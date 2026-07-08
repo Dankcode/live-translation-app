@@ -1,18 +1,18 @@
 {
-  "name": "my-translating-app",
+  "name": "dual-live-translations",
   "version": "0.1.0",
   "private": true,
-  "description": "Live translation and subtitle overlay application",
+  "description": "LingoLoop dual-subtitle video studio with loop-first study tools",
   "author": "ryuuna",
   "main": "main/main.js",
   "scripts": {
     "dev": "next dev",
     "dev:hybrid": "concurrently \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
     "electron:dev": "concurrently \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "next build && electron-builder",
+    "electron:build": "next build --webpack && electron-builder",
     "electron:pack": "electron-builder --dir"
   },
   "dependencies": {
@@ -38,8 +38,8 @@
     "tailwindcss": "^4"
   },
   "build": {
-    "appId": "com.scribe.center",
-    "productName": "Scribe Center",
+    "appId": "com.ryuuna.duallivetranslations",
+    "productName": "LingoLoop",
     "directories": {
       "output": "dist"
     },

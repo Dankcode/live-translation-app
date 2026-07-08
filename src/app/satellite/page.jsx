@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import {
     Mic, MicOff, Terminal, ChevronDown, ChevronUp,
     Activity, Globe, Zap, Settings, ShieldCheck
@@ -24,20 +24,22 @@ export default function SatellitePage() {
         ? window.require('electron').ipcRenderer
         : null;
 
-    const addLog = (msg) => {
+    const addLog = useCallback((msg) => {
         const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
         console.log(`[Satellite Log ${time}]: ${msg}`);
         setLogs(prev => [{ time, msg }, ...prev].slice(0, 50)); // Keep last 50 logs, newest first
-    };
+    }, []);
 
     useEffect(() => {
         // --- 1. Initialize Speech Recognition ---
         const SpeechRecognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
 
         if (!SpeechRecognition) {
-            addLog("Error: Web Speech API not supported.");
-            setStatus("Incompatible Browser");
-            return;
+            const unsupportedTimer = window.setTimeout(() => {
+                addLog("Error: Web Speech API not supported.");
+                setStatus("Incompatible Browser");
+            }, 0);
+            return () => window.clearTimeout(unsupportedTimer);
         }
 
         const recognition = new SpeechRecognition();
@@ -152,9 +154,10 @@ export default function SatellitePage() {
             ipc.on('start-stt', handleStart);
             ipc.on('stop-stt', handleStop);
 
-            addLog("Secure IPC Bridge established.");
+            const bridgeTimer = window.setTimeout(() => addLog("Secure IPC Bridge established."), 0);
 
             return () => {
+                window.clearTimeout(bridgeTimer);
                 ipc.removeListener('start-stt', handleStart);
                 ipc.removeListener('stop-stt', handleStop);
                 recognition.stop();
@@ -194,7 +197,7 @@ export default function SatellitePage() {
                 recognition.stop();
             };
         }
-    }, [ipc]);
+    }, [addLog, ipc]);
 
     return (
         <div className="min-h-screen bg-[#fafafa] dark:bg-[#18181b] text-[#18181b] dark:text-[#f4f4f5] font-sans flex flex-col items-center justify-center p-6 transition-colors duration-500">

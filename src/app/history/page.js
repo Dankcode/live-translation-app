@@ -8,15 +8,17 @@ export default function HistoryPage() {
     const [isHydrated, setIsHydrated] = useState(false);
 
     useEffect(() => {
-        setIsHydrated(true);
-        const savedHistory = localStorage.getItem('scribe_transcript_history');
-        if (savedHistory) {
-            try {
-                setHistory(JSON.parse(savedHistory));
-            } catch (e) {
-                console.error('Failed to parse history:', e);
+        const hydrationTimer = window.setTimeout(() => {
+            setIsHydrated(true);
+            const savedHistory = localStorage.getItem('scribe_transcript_history');
+            if (savedHistory) {
+                try {
+                    setHistory(JSON.parse(savedHistory));
+                } catch (e) {
+                    console.error('Failed to parse history:', e);
+                }
             }
-        }
+        }, 0);
 
         // LAN Real-time Sync Logic (WebSocket)
         // Use hostname from the URL to find the Mac host
@@ -60,7 +62,10 @@ export default function HistoryPage() {
             }
         };
 
-        return () => ws.close();
+        return () => {
+            window.clearTimeout(hydrationTimer);
+            ws.close();
+        };
     }, []);
 
     const clearHistory = () => {

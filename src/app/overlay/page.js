@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { X, Maximize2, ArrowLeftRight, Settings as SettingsIcon, Sparkles } from 'lucide-react';
 
 const { ipcRenderer } = typeof window !== 'undefined' ? window.require('electron') : { ipcRenderer: null };
@@ -23,79 +23,7 @@ export default function OverlayPage() {
     const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
     const isRecognitionRunningRef = useRef(false);
 
-    useEffect(() => {
-        sourceLangRef.current = sourceLang;
-        targetLangRef.current = targetLang;
-    }, [sourceLang, targetLang]);
-
-    useEffect(() => {
-        setHasMounted(true);
-        const style = document.createElement('style');
-        style.innerHTML = `
-            html, body { background: transparent !important; overflow: hidden; margin: 0; padding: 0; }
-            * { transition: background 0.3s ease, border 0.3s ease, opacity 0.3s ease; }
-            input[type="range"]::-webkit-slider-thumb {
-                -webkit-appearance: none;
-                appearance: none;
-                width: 14px;
-                height: 14px;
-                background: #fff;
-                cursor: pointer;
-                border-radius: 50%;
-                box-shadow: 0 0 10px rgba(0,0,0,0.5);
-            }
-        `;
-        document.head.appendChild(style);
-
-        // Load saved settings
-        const savedOpacity = localStorage.getItem('overlay_opacity');
-        if (savedOpacity) setBgOpacity(parseFloat(savedOpacity));
-
-        const savedFontSize = localStorage.getItem('overlay_font_size');
-        if (savedFontSize) setFontSize(parseFloat(savedFontSize));
-
-        if (ipcRenderer) {
-            const onSub = (e, data) => setSubtitleHistory(data || []);
-            const onStart = (e, cfg) => {
-                const sLang = cfg?.sourceLang || sourceLangRef.current;
-                const tLang = cfg?.targetLang || targetLangRef.current;
-                setSourceLang(sLang);
-                setTargetLang(tLang);
-                startListening(sLang);
-            };
-            const onStop = () => stopListening();
-            const onSync = (e, { sourceLang: s, targetLang: t }) => {
-                setSourceLang(s);
-                setTargetLang(t);
-            };
-
-            ipcRenderer.on('receive-subtitle', onSub);
-            ipcRenderer.on('start-stt', onStart);
-            ipcRenderer.on('stop-stt', onStop);
-            ipcRenderer.on('sync-languages', onSync);
-
-            return () => {
-                ipcRenderer.removeListener('receive-subtitle', onSub);
-                ipcRenderer.removeListener('start-stt', onStart);
-                ipcRenderer.removeListener('stop-stt', onStop);
-                ipcRenderer.removeListener('sync-languages', onSync);
-            };
-        }
-    }, []);
-
-    // Save settings when they change
-    useEffect(() => {
-        if (hasMounted) {
-            localStorage.setItem('overlay_opacity', bgOpacity.toString());
-            localStorage.setItem('overlay_font_size', fontSize.toString());
-        }
-    }, [bgOpacity, fontSize, hasMounted]);
-
-    useEffect(() => {
-        if (ipcRenderer) ipcRenderer.send('overlay-hover', isHovered);
-    }, [isHovered]);
-
-    const startListening = (lang) => {
+    const startListening = useCallback((lang) => {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) return;
 
@@ -117,7 +45,7 @@ export default function OverlayPage() {
                 if (window._active) {
                     setTimeout(() => {
                         if (window._active && !isRecognitionRunningRef.current) {
-                            try { rec.start(); } catch (err) { }
+                            try { rec.start(); } catch { }
                         }
                     }, 300);
                 } else {
@@ -135,15 +63,97 @@ export default function OverlayPage() {
                 console.warn("SpeechRecognition start failed:", e);
             }
         }
-    };
+    }, []);
 
-    const stopListening = () => {
+    const stopListening = useCallback(() => {
         window._active = false;
         if (isRecognitionRunningRef.current) {
             recognitionRef.current?.stop();
         }
         setIsListening(false);
-    };
+    }, []);
+
+    useEffect(() => {
+        sourceLangRef.current = sourceLang;
+        targetLangRef.current = targetLang;
+    }, [sourceLang, targetLang]);
+
+    useEffect(() => {
+        const style = document.createElement('style');
+        style.innerHTML = `
+            html, body { background: transparent !important; overflow: hidden; margin: 0; padding: 0; }
+            * { transition: background 0.3s ease, border 0.3s ease, opacity 0.3s ease; }
+            input[type="range"]::-webkit-slider-thumb {
+                -webkit-appearance: none;
+                appearance: none;
+                width: 14px;
+                height: 14px;
+                background: #fff;
+                cursor: pointer;
+                border-radius: 50%;
+                box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            }
+        `;
+        document.head.appendChild(style);
+
+        const mountTimer = window.setTimeout(() => {
+            setHasMounted(true);
+
+            // Load saved settings
+            const savedOpacity = localStorage.getItem('overlay_opacity');
+            if (savedOpacity) setBgOpacity(parseFloat(savedOpacity));
+
+            const savedFontSize = localStorage.getItem('overlay_font_size');
+            if (savedFontSize) setFontSize(parseFloat(savedFontSize));
+        }, 0);
+
+        let removeIpcListeners = () => {};
+        if (ipcRenderer) {
+            const onSub = (e, data) => setSubtitleHistory(data || []);
+            const onStart = (e, cfg) => {
+                const sLang = cfg?.sourceLang || sourceLangRef.current;
+                const tLang = cfg?.targetLang || targetLangRef.current;
+                setSourceLang(sLang);
+                setTargetLang(tLang);
+                startListening(sLang);
+            };
+            const onStop = () => stopListening();
+            const onSync = (e, { sourceLang: s, targetLang: t }) => {
+                setSourceLang(s);
+                setTargetLang(t);
+            };
+
+            ipcRenderer.on('receive-subtitle', onSub);
+            ipcRenderer.on('start-stt', onStart);
+            ipcRenderer.on('stop-stt', onStop);
+            ipcRenderer.on('sync-languages', onSync);
+
+            removeIpcListeners = () => {
+                ipcRenderer.removeListener('receive-subtitle', onSub);
+                ipcRenderer.removeListener('start-stt', onStart);
+                ipcRenderer.removeListener('stop-stt', onStop);
+                ipcRenderer.removeListener('sync-languages', onSync);
+            };
+        }
+
+        return () => {
+            window.clearTimeout(mountTimer);
+            style.remove();
+            removeIpcListeners();
+        };
+    }, [startListening, stopListening]);
+
+    // Save settings when they change
+    useEffect(() => {
+        if (hasMounted) {
+            localStorage.setItem('overlay_opacity', bgOpacity.toString());
+            localStorage.setItem('overlay_font_size', fontSize.toString());
+        }
+    }, [bgOpacity, fontSize, hasMounted]);
+
+    useEffect(() => {
+        if (ipcRenderer) ipcRenderer.send('overlay-hover', isHovered);
+    }, [isHovered]);
 
     const swapLangs = () => {
         const map = { en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE', zh: 'zh-CN' };
