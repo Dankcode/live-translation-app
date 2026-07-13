@@ -3,8 +3,8 @@
 /**
  * Fallback client-side transcription.
  *
- * LingoLoop's primary transcription path is the local FFmpeg + whisper.cpp
- * media worker in src/lib/whisper-cpp.js. This module keeps the browser-only
+ * LingoLoop's primary transcription path is the local FFmpeg + Node-side
+ * Whisper media worker in src/lib/local-transcription.js. This module keeps the browser-only
  * Whisper path available for preview builds where Electron cannot expose the
  * original desktop file path.
  *
@@ -46,6 +46,12 @@ async function getRecognizer(model, onProgress) {
     env.allowLocalModels = false;
     asrPipelinePromise = pipeline('automatic-speech-recognition', model, {
       progress_callback: onProgress,
+    }).catch((error) => {
+      // Do NOT cache a rejected pipeline: a single failed model download used
+      // to poison every subsequent attempt until the page was reloaded.
+      asrPipelinePromise = null;
+      asrPipelineModel = null;
+      throw error;
     });
   }
   return asrPipelinePromise;
@@ -121,9 +127,17 @@ export async function transcribeMedia(file, options = {}) {
 
   onProgress?.(0.05, 'Extracting audio');
   const audio = await extractAudio(file);
+  const audioDuration = audio.length / TARGET_SAMPLE_RATE;
 
   onProgress?.(0.2, 'Loading speech model');
-  const recognizer = await getRecognizer(model, onModelLoad);
+  // Surface model-download progress: the first run pulls ~40–200 MB from the
+  // CDN, which previously looked like a frozen loading screen.
+  const recognizer = await getRecognizer(model, (info) => {
+    onModelLoad?.(info);
+    if (info?.status === 'progress' && Number.isFinite(info.progress)) {
+      onProgress?.(0.2 + (info.progress / 100) * 0.1, `Downloading speech model ${Math.min(99, Math.round(info.progress))}%`);
+    }
+  });
 
   const runOptions = {
     chunk_length_s: 30,
@@ -135,6 +149,16 @@ export async function transcribeMedia(file, options = {}) {
     runOptions.language = WHISPER_LANGUAGE_NAMES[language] || language;
     runOptions.task = 'transcribe';
   }
+
+  // Per-chunk progress so long videos show live movement instead of stalling.
+  const chunkStep = Math.max(1, runOptions.chunk_length_s - 2 * runOptions.stride_length_s);
+  const totalChunks = Math.max(1, Math.ceil(audioDuration / chunkStep));
+  let processedChunks = 0;
+  runOptions.chunk_callback = () => {
+    processedChunks += 1;
+    const fraction = Math.min(0.99, processedChunks / totalChunks);
+    onProgress?.(0.35 + fraction * 0.62, `Transcribing ${Math.round(fraction * 100)}%`);
+  };
 
   onProgress?.(0.35, forced ? 'Transcribing' : 'Detecting language & transcribing');
   const result = await recognizer(audio, runOptions);

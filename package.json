@@ -16,9 +16,11 @@
     "electron:pack": "electron-builder --dir"
   },
   "dependencies": {
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "@google/generative-ai": "^0.24.1",
     "@xenova/transformers": "^2.17.2",
     "concurrently": "^9.2.1",
+    "ffmpeg-static": "^5.3.0",
     "google-translate-api-next": "^0.1.0",
     "lucide-react": "^0.562.0",
     "next": "16.1.1",
@@ -57,6 +59,12 @@
     },
     "win": {
       "target": "nsis"
-    }
+    },
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/@ffprobe-installer/**",
+      "node_modules/@xenova/transformers/**",
+      "node_modules/onnxruntime-node/**"
+    ]
   }
 }

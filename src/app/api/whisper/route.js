@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { buildWhisperJobPlan, getWhisperStatus, runWhisperJob } from '@/lib/whisper-cpp';
+import { buildWhisperJobPlan, getWhisperStatus, runWhisperJob } from '@/lib/local-transcription';
 
 const SAMPLE_CUES = [
   {
@@ -63,7 +63,7 @@ export async function POST(request) {
     const plan = buildWhisperJobPlan(body);
     return NextResponse.json(plan);
   } catch (error) {
-    const message = error?.message || 'whisper.cpp pipeline failed';
+    const message = error?.message || 'local Whisper pipeline failed';
     const status = message.includes('not ready') || message.includes('required') ? 424 : 400;
     return NextResponse.json({ error: message, whisperStatus: getWhisperStatus() }, { status });
   }

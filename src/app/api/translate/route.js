@@ -4,7 +4,8 @@ import { geminiTranslate, geminiRefine } from '@/lib/gemini';
 export async function POST(request) {
     try {
         const body = await request.json();
-        const { text, from, to, llmModel, apiKey } = body;
+        const { text, from, llmModel, apiKey } = body;
+        const to = typeof body.to === 'string' && body.to ? body.to : 'en';
 
         if (!text) {
             return new Response(JSON.stringify({ error: "Text is required" }), { status: 400 });

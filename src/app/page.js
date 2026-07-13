@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { transcribeMedia } from '@/lib/transcribe';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { transcribeVideo } from '@/lib/asr-engines';
 import {
   AudioWaveform,
   BookOpen,
@@ -18,15 +18,19 @@ import {
   Languages,
   ListChecks,
   Maximize2,
+  Menu,
   Pause,
   Play,
+  Plus,
   Repeat,
+  Rewind,
   RotateCcw,
   Settings,
   SlidersHorizontal,
   Sparkles,
   Upload,
   Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 
@@ -75,6 +79,29 @@ const DEMO_CUES = [
   },
 ];
 
+const SAMPLE_MEDIA_PATH = 'sample.mp4';
+const SAMPLE_MEDIA_URL = '/samples/sample.mp4';
+const SAMPLE_FALLBACK_CUES = [
+  {
+    id: 'sample-fallback-1',
+    start: 0.4,
+    end: 4.2,
+    original: 'Ask not what your country can do for you.',
+    translation: '国があなたのために何をしてくれるかを問うのではありません。',
+    reading: 'ask not what your country can do for you',
+    confidence: 0.92,
+  },
+  {
+    id: 'sample-fallback-2',
+    start: 4.4,
+    end: 8.8,
+    original: 'Ask what you can do for your country.',
+    translation: 'あなたが国のために何ができるかを問いましょう。',
+    reading: 'ask what you can do for your country',
+    confidence: 0.92,
+  },
+];
+
 // Concrete languages (used for target selection and label lookups).
 const languages = [
   { value: 'ja', label: 'Japanese' },
@@ -99,26 +126,40 @@ function sourceLangLabel(value) {
   return sourceLanguages.find((item) => item.value === value)?.label || value;
 }
 
+function languageLabel(value) {
+  return languages.find((item) => item.value === value)?.label || value;
+}
+
 const sourceModes = [
   { id: 'embedded', label: 'Embedded', detail: 'Extract existing subtitle tracks' },
   { id: 'sidecar', label: 'Sidecar', detail: 'Parse SRT, VTT, ASS' },
-  { id: 'transcribe', label: 'Transcribe', detail: 'Local whisper.cpp path' },
+  { id: 'transcribe', label: 'Transcribe', detail: 'Local server-side Whisper path' },
+];
+
+const TRANSCRIPTION_STAGE_DEFINITIONS = [
+  { id: 'source', label: 'Read selected media', detail: 'Keep the imported MP4 attached to this transcription job.' },
+  { id: 'preflight', label: 'Check engine readiness', detail: 'Verify FFmpeg, ffprobe, the local recognizer, and the selected model.' },
+  { id: 'transfer', label: 'Send the actual MP4', detail: 'Use the Electron file path or upload the browser File to the local route.' },
+  { id: 'native', label: 'Create source-language cues', detail: 'ffprobe -> FFmpeg mono 16 kHz WAV -> local Whisper.' },
+  { id: 'cues', label: 'Parse timestamps', detail: 'Convert local Whisper segments into timed subtitle cues.' },
+  { id: 'translation', label: 'Translate cue text', detail: 'Translate each real source cue into the selected target language.' },
+  { id: 'render', label: 'Open the subtitle viewer', detail: 'Render only the cues created for this imported file.' },
 ];
 
 const qualityPresets = {
   fast: {
     label: 'Fast',
-    detail: 'ggml-base, VAD trim, minimal cleanup',
+    detail: 'Whisper Tiny, VAD trim, minimal cleanup',
     cleanup: { separateVocals: false, denoise: false, diarize: false, mixedLanguage: false },
   },
   balanced: {
     label: 'Balanced',
-    detail: 'small/medium model, denoise + loudnorm',
+    detail: 'Whisper Base, denoise + loudnorm',
     cleanup: { separateVocals: false, denoise: true, diarize: false, mixedLanguage: true },
   },
   best: {
     label: 'Best',
-    detail: 'large-v3 / WhisperX path + diarization',
+    detail: 'Whisper Small, full cleanup + diarization',
     cleanup: { separateVocals: true, denoise: true, diarize: true, mixedLanguage: true },
   },
 };
@@ -232,6 +273,55 @@ function secondsToSrt(value) {
   return secondsToClock(value).replace('.', ',');
 }
 
+// Compact clock for the transport bar (no milliseconds): 1:04:03 or 4:03.
+function clockShort(value) {
+  const total = Math.max(0, Math.floor(Number(value) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+// ---- "Continue watching" memory ------------------------------------------
+// Positions are stored per video (name + size), NOT the video itself — the
+// media file stays wherever it lives on disk and is never copied.
+const POSITIONS_KEY = 'lingoloop.playback-positions';
+
+function loadPositions() {
+  if (typeof window === 'undefined') return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(POSITIONS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function savePlaybackPosition(key, time, duration) {
+  if (!key || typeof window === 'undefined') return;
+  try {
+    const all = loadPositions();
+    // Near the start or the end -> forget the position (like VLC does).
+    if (time < 5 || (duration && time > duration - 10)) {
+      delete all[key];
+    } else {
+      all[key] = { t: Math.floor(time), d: Math.floor(duration || 0), at: Date.now() };
+    }
+    // Cap the list so this never becomes its own cache problem.
+    const trimmed = Object.fromEntries(
+      Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, 200),
+    );
+    window.localStorage.setItem(POSITIONS_KEY, JSON.stringify(trimmed));
+  } catch {
+    // localStorage full/unavailable — not worth interrupting playback.
+  }
+}
+
+const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2];
+const SUBTITLE_LOG_KEY = 'lingoloop.session-subtitle-log';
+const SUBTITLE_COLOR_PRESETS = ['#ffffff', '#f8d86a', '#8be9fd', '#a7f3d0'];
+
 function secondsToAss(value) {
   const safe = Math.max(0, Number(value) || 0);
   const hours = Math.floor(safe / 3600);
@@ -292,6 +382,27 @@ function enrichCue(cue, index) {
   };
 }
 
+function normalizeCuesForPlayback(nextCues) {
+  return nextCues
+    .map(enrichCue)
+    .filter((cue) => cue.original && Number.isFinite(cue.start) && Number.isFinite(cue.end))
+    .map((cue) => ({ ...cue, end: Math.max(cue.start + 0.08, cue.end) }))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function cueAtTime(cues, time) {
+  let low = 0;
+  let high = cues.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const cue = cues[middle];
+    if (time < cue.start) high = middle - 1;
+    else if (time >= cue.end) low = middle + 1;
+    else return cue;
+  }
+  return null;
+}
+
 function parseSrt(text) {
   return text
     .replace(/\r/g, '')
@@ -347,7 +458,38 @@ function makeSrt(cues) {
   ].join('\n')).join('\n\n');
 }
 
-function makeAss(cues) {
+function createTemporarySubtitleLog(name, cues, sourceMode) {
+  return {
+    name,
+    sourceMode,
+    createdAt: Date.now(),
+    cueCount: cues.length,
+    duration: cues[cues.length - 1]?.end || 0,
+    srt: makeSrt(cues),
+  };
+}
+
+function saveTemporarySubtitleLog(log) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (log) window.sessionStorage.setItem(SUBTITLE_LOG_KEY, JSON.stringify(log));
+    else window.sessionStorage.removeItem(SUBTITLE_LOG_KEY);
+  } catch {
+    // Session storage is a convenience; subtitle playback must not depend on it.
+  }
+}
+
+function hexToAssColor(value) {
+  const normalized = String(value || '#ffffff').replace('#', '').padEnd(6, 'f').slice(0, 6);
+  const red = normalized.slice(0, 2);
+  const green = normalized.slice(2, 4);
+  const blue = normalized.slice(4, 6);
+  return `&H00${blue}${green}${red}`.toUpperCase();
+}
+
+function makeAss(cues, colors = {}) {
+  const originalColor = hexToAssColor(colors.original);
+  const translationColor = hexToAssColor(colors.translation);
   const header = [
     '[Script Info]',
     'Title: dual-live-translations export',
@@ -355,8 +497,8 @@ function makeAss(cues) {
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    'Style: Original,Arial,42,&H00FFFFFF,&H000000FF,&H00111111,&H66000000,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,92,1',
-    'Style: Translation,Arial,34,&H0098F5E1,&H000000FF,&H00111111,&H66000000,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,42,1',
+    `Style: Original,Arial,42,${originalColor},&H000000FF,&H00111111,&H66000000,-1,0,0,0,100,100,0,0,1,2,0,2,40,40,92,1`,
+    `Style: Translation,Arial,34,${translationColor},&H000000FF,&H00111111,&H66000000,-1,0,0,0,100,100,0,0,1,2,0,2,40,40,42,1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -407,6 +549,30 @@ function getDesktopFilePath(file) {
     return '';
   }
   return '';
+}
+
+function fileSizeLabel(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function createTranscriptionTrace(file, mediaPath) {
+  const fileDetail = file
+    ? `${file.name}${fileSizeLabel(file.size) ? ` · ${fileSizeLabel(file.size)}` : ''} · ${mediaPath ? 'desktop file path' : 'browser upload'}`
+    : 'No media file is attached.';
+
+  return TRANSCRIPTION_STAGE_DEFINITIONS.map((stage) => ({
+    ...stage,
+    status: stage.id === 'source' ? 'done' : 'queued',
+    detail: stage.id === 'source' ? fileDetail : stage.detail,
+  }));
+}
+
+function missingTranscriptionChecks(status) {
+  const checks = status?.checks;
+  if (!checks || typeof checks !== 'object') return ['transcription status'];
+  return Object.entries(checks).filter(([, ready]) => !ready).map(([name]) => name);
 }
 
 function localTranslate(text, targetLang) {
@@ -470,9 +636,9 @@ function parseBatchManifest(name, text) {
     .map((line, index) => makeQueueItem(line, index));
 }
 
-function IconButton({ label, icon: Icon, active, onClick }) {
+function IconButton({ label, icon: Icon, active, disabled = false, onClick }) {
   return (
-    <button type="button" className={`icon-button${active ? ' active' : ''}`} aria-label={label} title={label} onClick={onClick}>
+    <button type="button" className={`icon-button${active ? ' active' : ''}`} aria-label={label} title={label} disabled={disabled} onClick={onClick}>
       <Icon size={18} strokeWidth={2} />
     </button>
   );
@@ -541,8 +707,15 @@ export default function Home() {
   const maskDragRef = useRef(null);
   const controlsTimerRef = useRef(null);
   const mediaFileRef = useRef(null);
+  const processingCancelRef = useRef(false);
+  const activeItemIdRef = useRef(null);
+  const libraryRef = useRef([]);
   const [viewStep, setViewStep] = useState('landing');
-  const [intent, setIntent] = useState('watch');
+  const [intent] = useState('watch');
+  const [library, setLibrary] = useState([]);
+  const [activeItemId, setActiveItemId] = useState(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [batchRunning, setBatchRunning] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('subtitles');
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -552,24 +725,42 @@ export default function Home() {
   const [detectedLang, setDetectedLang] = useState(null);
   const [transcribing, setTranscribing] = useState(false);
   const [transcriptionStatus, setTranscriptionStatus] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const [processingStage, setProcessingStage] = useState('');
+  const [processingProgress, setProcessingProgress] = useState(0);
+  const [activeEngine, setActiveEngine] = useState(null);
   const [targetLang, setTargetLang] = useState('en');
-  const [sourceMode, setSourceMode] = useState('embedded');
+  const [sourceMode, setSourceMode] = useState('transcribe');
+  const [subtitleOrigin, setSubtitleOrigin] = useState('demo');
+  const [transcriptionTrace, setTranscriptionTrace] = useState([]);
+  const [transcriptionDebug, setTranscriptionDebug] = useState(null);
   const [quality, setQuality] = useState('balanced');
   const [cleanup, setCleanup] = useState(qualityPresets.balanced.cleanup);
-  const [subtitleStyle, setSubtitleStyle] = useState('cinema');
+  const [subtitleStyle, setSubtitleStyle] = useState('minimal');
   const [subtitlePosition, setSubtitlePosition] = useState('bottom');
+  const [subtitleOriginalColor, setSubtitleOriginalColor] = useState('#ffffff');
+  const [subtitleTranslationColor, setSubtitleTranslationColor] = useState('#ffffff');
+  const [subtitleLog, setSubtitleLog] = useState(null);
   const [maskMode, setMaskMode] = useState('off');
   const [maskRect, setMaskRect] = useState(() => maskPresets[0].rect);
   const [maskOpacity, setMaskOpacity] = useState(0.78);
   const [maskBlur, setMaskBlur] = useState(8);
   const [maskFeather, setMaskFeather] = useState(10);
   const [maskEditing, setMaskEditing] = useState(false);
-  const [focusView, setFocusView] = useState(false);
+  const [focusView] = useState(false);
+  const [panelTab, setPanelTab] = useState('queue');
+  const [muted, setMuted] = useState(false);
   const [batchSize, setBatchSize] = useState(50);
   const [concurrency, setConcurrency] = useState(6);
   const [cacheEnabled, setCacheEnabled] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [playbackTime, setPlaybackTime] = useState(6.2);
+  const [playbackTime, setPlaybackTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const timelineRef = useRef(null);
+  const positionSaveRef = useRef(0);
+  const playbackSyncFrameRef = useRef(null);
+  const playbackSyncTickRef = useRef(0);
   const [selectedWord, setSelectedWord] = useState(null);
   const [mediaName, setMediaName] = useState('demo-media.mp4');
   const [mediaUrl, setMediaUrl] = useState('');
@@ -587,9 +778,7 @@ export default function Home() {
   const [queueRunning, setQueueRunning] = useState(false);
   const [manifestSummary, setManifestSummary] = useState('2 demo jobs loaded');
 
-  const activeCue = useMemo(() => (
-    cues.find((cue) => playbackTime >= cue.start && playbackTime <= cue.end) ?? cues[0]
-  ), [cues, playbackTime]);
+  const activeCue = useMemo(() => cueAtTime(cues, playbackTime), [cues, playbackTime]);
   const jobs = useMemo(() => buildJobs(sourceMode, cues, translationDone, queueRunning), [sourceMode, cues, translationDone, queueRunning]);
   const completeCount = jobs.filter((job) => job.status === 'done').length;
   const runningJob = jobs.find((job) => job.status === 'running') ?? jobs[jobs.length - 1];
@@ -613,29 +802,71 @@ export default function Home() {
   }, [queue]);
   const dueCards = savedCards.filter((card) => card.fsrs.due <= Date.now()).length;
   const whisperReady = Boolean(transcriptionStatus?.ready);
+  const playbackReady = Boolean(
+    cues.length
+    && translationDone
+    && subtitleOrigin !== 'unprocessed'
+    && !transcribing
+    && !processing,
+  );
+  const pendingCount = useMemo(
+    () => library.filter((item) => !item.cues?.length && item.status !== 'processing').length,
+    [library],
+  );
+
+  const refreshTranscriptionStatus = useCallback(async (nextQuality = quality) => {
+    try {
+      const response = await fetch(`/api/transcribe?quality=${encodeURIComponent(nextQuality)}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && typeof data === 'object') {
+          setTranscriptionStatus(data);
+          return data;
+        }
+      }
+    } catch {
+      // Fall through to the shared unavailable state below.
+    }
+    const unavailable = { ready: false, checks: {}, paths: {} };
+    setTranscriptionStatus(unavailable);
+    return unavailable;
+  }, [quality]);
+
+  const updateTranscriptionTrace = (id, status, detail) => {
+    setTranscriptionTrace((current) => current.map((stage) => (
+      stage.id === id ? { ...stage, status, detail: detail || stage.detail } : stage
+    )));
+  };
 
   useEffect(() => () => {
     if (simulationRef.current) window.clearInterval(simulationRef.current);
     if (controlsTimerRef.current) window.clearTimeout(controlsTimerRef.current);
+    if (playbackSyncFrameRef.current) window.cancelAnimationFrame(playbackSyncFrameRef.current);
   }, []);
-
-  useEffect(() => () => {
-    if (mediaUrl) URL.revokeObjectURL(mediaUrl);
-  }, [mediaUrl]);
 
   useEffect(() => {
-    const refreshWhisperStatus = async () => {
-      try {
-        const response = await fetch('/api/whisper');
-        if (response.ok) {
-          setTranscriptionStatus(await response.json());
-        }
-      } catch {
-        setTranscriptionStatus({ ready: false, checks: {}, paths: {} });
-      }
-    };
-    refreshWhisperStatus();
+    try {
+      const savedLog = JSON.parse(window.sessionStorage.getItem(SUBTITLE_LOG_KEY));
+      if (savedLog?.srt && Number.isFinite(savedLog.cueCount)) setSubtitleLog(savedLog);
+    } catch {
+      // A malformed session log should never affect the player.
+    }
   }, []);
+
+  // Object URLs are owned by library items (they must stay alive so the user
+  // can switch videos at any time). Revoke them all when the app unmounts.
+  useEffect(() => {
+    libraryRef.current = library;
+  }, [library]);
+  useEffect(() => () => {
+    libraryRef.current.forEach((item) => {
+      if (item.url) URL.revokeObjectURL(item.url);
+    });
+  }, []);
+
+  useEffect(() => {
+    refreshTranscriptionStatus(quality);
+  }, [quality, refreshTranscriptionStatus]);
 
   useEffect(() => {
     if (!queueRunning) return undefined;
@@ -715,14 +946,110 @@ export default function Home() {
     };
   }, [maskEditing]);
 
-  const applyCues = (nextCues, nextSourceMode, message) => {
-    const enriched = nextCues.map(enrichCue).filter((cue) => cue.original);
-    setCues(enriched.length ? enriched : DEMO_CUES.map(enrichCue));
+  // Keep the chosen speed when a new video loads.
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.playbackRate = playbackRate;
+  }, [playbackRate, mediaUrl]);
+
+  // Media `timeupdate` can be as sparse as four events per second. A lightly
+  // throttled animation-frame sync keeps subtitle boundaries aligned without
+  // re-rendering the full workspace on every video frame.
+  useEffect(() => {
+    if (!isPlaying || !mediaUrl || !videoRef.current) return undefined;
+    const sync = (timestamp) => {
+      const video = videoRef.current;
+      if (!video || video.paused) return;
+      if (timestamp - playbackSyncTickRef.current >= 80) {
+        playbackSyncTickRef.current = timestamp;
+        const currentTime = video.currentTime;
+        setPlaybackTime((current) => Math.abs(current - currentTime) >= 0.03 ? currentTime : current);
+      }
+      playbackSyncFrameRef.current = window.requestAnimationFrame(sync);
+    };
+    playbackSyncFrameRef.current = window.requestAnimationFrame(sync);
+    return () => {
+      if (playbackSyncFrameRef.current) window.cancelAnimationFrame(playbackSyncFrameRef.current);
+      playbackSyncFrameRef.current = null;
+    };
+  }, [isPlaying, mediaUrl]);
+
+  // VLC-style keyboard shortcuts (player view only, not while typing).
+  useEffect(() => {
+    if (viewStep !== 'player') return undefined;
+    const handleKey = (event) => {
+      if (settingsOpen || libraryOpen || processing) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (
+        target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      )) return;
+
+      switch (event.key) {
+        case ' ':
+        case 'k':
+          event.preventDefault();
+          togglePlayback();
+          break;
+        case 'ArrowRight':
+          event.preventDefault();
+          seekBy(10);
+          break;
+        case 'ArrowLeft':
+          event.preventDefault();
+          seekBy(-10);
+          break;
+        case 'ArrowUp':
+          if (videoRef.current) {
+            event.preventDefault();
+            videoRef.current.volume = clamp(videoRef.current.volume + 0.1, 0, 1);
+          }
+          break;
+        case 'ArrowDown':
+          if (videoRef.current) {
+            event.preventDefault();
+            videoRef.current.volume = clamp(videoRef.current.volume - 0.1, 0, 1);
+          }
+          break;
+        case 'm':
+          toggleMute();
+          break;
+        case 'f':
+          toggleFullscreen();
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  });
+
+  const recordSubtitleLog = (normalizedCues, nextSourceMode, nextName = mediaName) => {
+    const log = createTemporarySubtitleLog(nextName, normalizedCues, nextSourceMode);
+    setSubtitleLog(log);
+    saveTemporarySubtitleLog(log);
+  };
+
+  const clearSubtitleLog = () => {
+    setSubtitleLog(null);
+    saveTemporarySubtitleLog(null);
+  };
+
+  const downloadSubtitleLog = () => {
+    if (!subtitleLog?.srt) return;
+    const baseName = subtitleLog.name.replace(/\.[^.]+$/, '') || 'subtitle-log';
+    downloadText(`${baseName}.session.srt`, subtitleLog.srt);
+  };
+
+  const applyCues = (nextCues, nextSourceMode, message, logName = mediaName) => {
+    const enriched = normalizeCuesForPlayback(nextCues);
+    setCues(enriched);
     setSourceMode(nextSourceMode);
-    setPlaybackTime(enriched[0]?.start ?? 2);
+    setSubtitleOrigin(nextSourceMode === 'sidecar' ? 'sidecar' : nextSourceMode === 'transcribe' ? 'transcription' : 'unprocessed');
+    setPlaybackTime(enriched[0]?.start ?? 0);
     setSelectedWord(enriched[0]?.words?.[0] ?? null);
-    setTranslationDone(nextSourceMode !== 'sidecar');
+    setTranslationDone(nextSourceMode !== 'sidecar' && enriched.length > 0);
     setStatusMessage(message);
+    if (enriched.length) recordSubtitleLog(enriched, nextSourceMode, logName);
   };
 
   const handleQualityChange = (nextQuality) => {
@@ -765,34 +1092,87 @@ export default function Home() {
     event.preventDefault();
   };
 
-  const handleMediaFile = (file) => {
-    if (!file) return;
-    if (mediaUrl) URL.revokeObjectURL(mediaUrl);
-    mediaFileRef.current = file;           // keep the actual File for transcription
-    setMediaUrl(URL.createObjectURL(file));
-    setMediaName(file.name);
-    setMediaPath(getDesktopFilePath(file));
-    setDetectedLang(null);
-    setViewStep('config');
-    setStatusMessage(`Loaded ${file.name}. Confirm languages, then start.`);
+  const updateLibraryItem = (id, patch) => {
+    setLibrary((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  };
+
+  // Make a library item the one showing in the player. Processed items open
+  // straight into the viewer; unprocessed items go to the (short) config step.
+  const selectLibraryItem = (item, options = {}) => {
+    if (!item) return;
+    videoRef.current?.pause();
+    activeItemIdRef.current = item.id;
+    setActiveItemId(item.id);
+    mediaFileRef.current = item.file || null;
+    setMediaUrl(item.url || '');
+    setMediaName(item.name);
+    setMediaPath(item.path || '');
+    setDetectedLang(item.detectedLang || null);
+    setIsPlaying(false);
+    setDuration(0);
+    setSelectedWord(null);
+    setSourceMode('transcribe');
+    if (item.cues?.length) {
+      const normalizedCues = normalizeCuesForPlayback(item.cues);
+      setCues(normalizedCues);
+      setPlaybackTime(normalizedCues[0]?.start ?? 0);
+      setSubtitleOrigin('transcription');
+      setTranslationDone(true);
+      recordSubtitleLog(normalizedCues, 'transcribe', item.name);
+      setViewStep('player');
+      setStatusMessage(`Now showing ${item.name}. Press Play whenever you're ready.`);
+    } else {
+      setCues([]);
+      setPlaybackTime(0);
+      setSubtitleOrigin('unprocessed');
+      setTranslationDone(false);
+      clearSubtitleLog();
+      setTranscriptionTrace(createTranscriptionTrace(item.file, item.path));
+      setTranscriptionDebug(null);
+      setViewStep(options.stay ? viewStep : 'config');
+      setStatusMessage(`${item.name} doesn't have subtitles yet. Press "Create subtitles" to transcribe and translate it.`);
+    }
+  };
+
+  // Accept one or many dropped/browsed media files into the library.
+  const addFilesToLibrary = (fileList) => {
+    const files = Array.from(fileList || []).filter((file) => (
+      file.type?.startsWith('video/')
+      || file.type?.startsWith('audio/')
+      || /\.(mp4|mkv|mov|webm|m4v|mp3|wav|m4a|aac|flac|ogg)$/i.test(file.name)
+    ));
+    if (!files.length) {
+      setStatusMessage('Those files were not recognized as video or audio.');
+      return;
+    }
+    const items = files.map((file, index) => ({
+      id: `media-${Date.now()}-${index}`,
+      name: file.name,
+      file,
+      url: URL.createObjectURL(file),
+      path: getDesktopFilePath(file),
+      status: 'new',
+      progress: 0,
+      stage: '',
+      cues: null,
+      detectedLang: null,
+      error: null,
+    }));
+    setLibrary((current) => [...current, ...items]);
+    selectLibraryItem(items[0]);
+    setStatusMessage(items.length === 1
+      ? `Added ${items[0].name}. Check the languages below, then press "Create subtitles".`
+      : `Added ${items.length} videos to your library. Transcribe them one by one, or all at once from the library menu.`);
   };
 
   const handleMediaImport = (event) => {
-    handleMediaFile(event.target.files?.[0]);
+    addFilesToLibrary(event.target.files);
+    event.target.value = '';
   };
 
   const handleDropMedia = (event) => {
     event.preventDefault();
-    handleMediaFile(event.dataTransfer.files?.[0]);
-  };
-
-  const chooseExperience = (nextMode) => {
-    setMode(nextMode);
-    setIntent('watch');
-    setViewStep('config');
-    setStatusMessage(nextMode === 'education'
-      ? 'Study mode selected. Loop tools, mining, and review are ready when you start.'
-      : 'Watch mode selected. The player will stay clean and video-first.');
+    addFilesToLibrary(event.dataTransfer.files);
   };
 
   const openSettings = (tab = 'subtitles') => {
@@ -801,7 +1181,7 @@ export default function Home() {
     setControlsVisible(true);
   };
 
-  const startProject = () => {
+  const openPlayer = () => {
     setViewStep('player');
     setSettingsOpen(false);
     setStatusMessage(intent === 'export'
@@ -810,25 +1190,62 @@ export default function Home() {
   };
 
   const loadSampleProject = async () => {
+    setMediaName('LingoLoop sample smoke test');
+    setSourceLang('en');
+    setTargetLang('ja');
+    setDetectedLang('en');
+    setSourceMode('transcribe');
+    setSubtitleOrigin('sample');
+    setActiveEngine('node-whisper');
+    setProcessing(true);
+    setProcessingStage('Running sample smoke test');
+    setProcessingProgress(0.08);
+
     try {
-      const response = await fetch('/api/whisper', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'sample' }),
+      const { cues: sampleCues, detectedLanguage, engine, status, logPath, job } = await transcribeVideo(null, {
+        engine: 'node-whisper',
+        samplePath: SAMPLE_MEDIA_PATH,
+        language: 'en',
+        quality,
+        onProgress: (fraction, stage) => {
+          setProcessingStage(stage || 'Running sample smoke test');
+          setProcessingProgress(Math.min(0.55, 0.1 + fraction * 0.45));
+        },
       });
-      if (!response.ok) throw new Error('Sample smoke test is unavailable.');
-      const data = await response.json();
-      setMediaName(data.mediaName || 'LingoLoop sample');
+
+      setProcessingStage('Translating sample');
+      setProcessingProgress(0.64);
+      const translated = await translateList(sampleCues.map(enrichCue), detectedLanguage || 'en', 'ja');
+
+      setMediaUrl(SAMPLE_MEDIA_URL);
+      setMediaPath('');
+      setTranscriptionStatus(status || await refreshTranscriptionStatus(quality));
+      setTranscriptionDebug({ engine, job, logPath });
+      applyCues(
+        translated,
+        'transcribe',
+        `Sample smoke test completed with ${engine}. ${logPath ? `Log: ${logPath}` : 'Local transcription path verified.'}`,
+        'LingoLoop sample smoke test',
+      );
+      setProcessingProgress(1);
+      setProcessingStage('Done');
+      setViewStep('player');
+    } catch (error) {
+      const setupError = error.status === 503 || error.code === 'NO_RECOGNIZER' || error.code === 'NO_MODEL' || error.code === 'NO_SAMPLE';
       setMediaUrl('');
       setMediaPath('');
-      setSourceLang(data.sourceLang || 'en');
-      setTargetLang(data.targetLang || 'ja');
-      setDetectedLang(data.sourceLang || 'en');
-      setTranscriptionStatus(data.status || null);
-      applyCues(data.cues || DEMO_CUES, 'transcribe', 'Sample smoke test loaded. This follows the planned FFmpeg -> whisper.cpp -> cues path.');
+      setTranscriptionDebug({ error: error.message, job: error.job || null });
+      applyCues(
+        SAMPLE_FALLBACK_CUES,
+        'transcribe',
+        setupError
+          ? 'Sample preview loaded with bundled fallback cues. Re-check local transcription before running the FFmpeg -> Whisper smoke test.'
+          : `Sample smoke test failed: ${error.message}`,
+        'LingoLoop sample smoke test',
+      );
       setViewStep('config');
-    } catch (error) {
-      setStatusMessage(error.message);
+    } finally {
+      window.setTimeout(() => setProcessing(false), 450);
     }
   };
 
@@ -838,7 +1255,7 @@ export default function Home() {
     const text = await file.text();
     const parsed = parseSubtitleFile(file.name, text);
     setSidecarName(file.name);
-    applyCues(parsed, 'sidecar', parsed.length ? `Parsed ${parsed.length} cues from ${file.name}.` : `No cues found in ${file.name}; using demo cues.`);
+    applyCues(parsed, 'sidecar', parsed.length ? `Parsed ${parsed.length} cues from ${file.name}.` : `No cues found in ${file.name}.`);
   };
 
   const handleBatchImport = async (event) => {
@@ -864,7 +1281,10 @@ export default function Home() {
     setStatusMessage(`${nextQueue.length} media files queued for offline processing.`);
   };
 
-  const runTranscription = async () => {
+  // Full "video -> dual subtitles" pipeline, shown behind the loading screen:
+  //   1. transcribe with the local native worker, then
+  //   2. translate the resulting cues into the target language.
+  const processVideo = async () => {
     const file = mediaFileRef.current;
     if (!file && !mediaPath) {
       setStatusMessage('Import a video or audio file before transcribing.');
@@ -876,64 +1296,231 @@ export default function Home() {
       return;
     }
 
+    videoRef.current?.pause();
+    setIsPlaying(false);
     setSourceMode('transcribe');
     setTranscribing(true);
     setTranslationDone(false);
-    setStatusMessage(sourceLang === 'detect'
-      ? 'Starting local whisper.cpp language detection and transcription…'
-      : `Starting local whisper.cpp transcription in ${sourceLangLabel(sourceLang)}…`);
+    setActiveEngine('node-whisper');
+    setSubtitleOrigin('unprocessed');
+    setTranscriptionTrace(createTranscriptionTrace(file, mediaPath));
+    setTranscriptionDebug(null);
+    processingCancelRef.current = false;
+    setProcessing(true);
+    setProcessingProgress(0.02);
+    setProcessingStage('Preparing');
 
     try {
-      if (mediaPath) {
-        const response = await fetch('/api/whisper', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'transcribe',
-            mediaPath,
-            language: sourceLang,
-            quality,
-          }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Local whisper.cpp transcription failed.');
-        setTranscriptionStatus(data.plan?.status || null);
-        applyCues(data.cues, 'transcribe', `Local whisper.cpp produced ${data.cues.length} cues from ${mediaName}.`);
+      updateTranscriptionTrace('preflight', 'running', 'Checking the local native transcription worker.');
+      const pipelineStatus = await refreshTranscriptionStatus(quality);
+      if (!pipelineStatus.ready) {
+        const missing = missingTranscriptionChecks(pipelineStatus);
+        const error = `Local transcription is not ready. Missing: ${missing.join(', ')}. Reinstall the app dependencies, then use Re-check transcription.`;
+        updateTranscriptionTrace('preflight', 'failed', error);
+        setTranscriptionDebug({ error, status: pipelineStatus });
+        setStatusMessage(error);
         return;
       }
+      updateTranscriptionTrace('preflight', 'done', 'FFmpeg, ffprobe, the local recognizer, and the selected model are ready.');
 
-      setStatusMessage('Desktop file path was not available, using browser Whisper fallback for preview only.');
-      const model = quality === 'best'
-        ? 'Xenova/whisper-small'
-        : quality === 'fast'
-          ? 'Xenova/whisper-tiny'
-          : 'Xenova/whisper-base';
+      updateTranscriptionTrace(
+        'transfer',
+        'running',
+        mediaPath ? 'Sending the Electron desktop path to the local route.' : 'Uploading the selected browser File to the local route.',
+      );
 
-      const { cues: asrCues, detectedLanguage } = await transcribeMedia(file, {
+      // --- Stage 1: transcription -------------------------------------------
+      const { cues: asrCues, detectedLanguage, engine, status, logPath, job } = await transcribeVideo(file, {
+        engine: 'node-whisper',
         language: sourceLang,
-        model,
+        quality,
+        mediaPath,
+        onEngine: (eng) => setActiveEngine(eng),
         onProgress: (fraction, stage) => {
-          setStatusMessage(`${stage}… ${Math.round(fraction * 100)}%`);
+          if (processingCancelRef.current) return;
+          const normalizedStage = String(stage || '').toLowerCase();
+          if (normalizedStage.includes('upload') || normalizedStage.includes('desktop path')) {
+            updateTranscriptionTrace('transfer', 'running', stage);
+          } else if (normalizedStage.includes('transcrib') || normalizedStage.includes('smoke')) {
+            updateTranscriptionTrace('transfer', 'done', 'The actual media input reached the selected engine.');
+            updateTranscriptionTrace('native', 'running', stage || 'Creating source-language cues.');
+          } else if (normalizedStage.includes('reading cues')) {
+            updateTranscriptionTrace('native', 'done', 'Speech recognition completed.');
+            updateTranscriptionTrace('cues', 'running', 'Reading timestamped cue data.');
+          }
+          setProcessingStage(stage || 'Transcribing');
+          // Transcription occupies the first ~55% of the bar.
+          setProcessingProgress(Math.min(0.55, 0.1 + fraction * 0.45));
         },
       });
 
+      if (processingCancelRef.current) return;
+
       if (!asrCues.length) {
+        setCues([]);
+        updateTranscriptionTrace('cues', 'failed', 'The engine returned no spoken cue text for this file.');
         setStatusMessage('No speech was detected in this file. Try a different source or check the audio track.');
         return;
       }
 
-      if (sourceLang === 'detect' && detectedLanguage) {
-        setDetectedLang(detectedLanguage);
-      }
+      const detected = detectedLanguage || null;
+      if (sourceLang === 'detect' && detected) setDetectedLang(detected);
+      if (status) setTranscriptionStatus(status);
+      setTranscriptionDebug({ engine, job, logPath, status });
+      updateTranscriptionTrace('transfer', 'done', 'The actual media input reached the selected engine.');
+      updateTranscriptionTrace('native', 'done', 'ffprobe, FFmpeg, and local Whisper completed.');
+      updateTranscriptionTrace('cues', 'done', `${asrCues.length} timestamped source cues were created.`);
 
-      const langNote = sourceLang === 'detect' && detectedLanguage
-        ? ` Detected ${sourceLangLabel(detectedLanguage)}.`
-        : '';
-      applyCues(asrCues, 'transcribe', `Transcribed ${asrCues.length} cues from ${file.name}.${langNote}`);
+      // --- Stage 2: translation ---------------------------------------------
+      setProcessingStage(`Translating to ${languageLabel(targetLang)}`);
+      setProcessingProgress(0.62);
+      updateTranscriptionTrace('translation', 'running', `Translating ${asrCues.length} real source cues.`);
+
+      const effectiveSource = (sourceLang === 'detect' || sourceLang === 'none')
+        ? (detected || 'auto')
+        : sourceLang;
+
+      const enrichedAsr = asrCues.map(enrichCue);
+      const translated = await translateList(enrichedAsr, effectiveSource, targetLang);
+
+      if (processingCancelRef.current) return;
+
+      setProcessingStage('Finalizing');
+      setProcessingProgress(0.95);
+
+      const finalCues = normalizeCuesForPlayback(translated);
+      setCues(finalCues);
+      setSourceMode('transcribe');
+      setTranslationDone(true);
+      setPlaybackTime(finalCues[0]?.start ?? 0);
+      setSelectedWord(finalCues[0]?.words?.[0] ?? null);
+      setSubtitleOrigin('transcription');
+      recordSubtitleLog(finalCues, 'transcribe');
+      if (activeItemIdRef.current) {
+        updateLibraryItem(activeItemIdRef.current, {
+          status: 'done',
+          progress: 100,
+          stage: 'Ready',
+          cues: finalCues,
+          detectedLang: detected,
+        });
+      }
+      updateTranscriptionTrace('translation', 'done', `Translated to ${languageLabel(targetLang)}.`);
+      updateTranscriptionTrace('render', 'done', 'The subtitle viewer is using the cues from this imported file.');
+
+      setProcessingProgress(1);
+      setProcessingStage('Done');
+
+      const detectNote = sourceLang === 'detect' && detected ? ` Detected ${sourceLangLabel(detected)}.` : '';
+      const engineNote = ` with ${engine}`;
+      const logNote = logPath ? ` Log: ${logPath}.` : '';
+      setStatusMessage(`Transcribed ${finalCues.length} cues${engineNote} and translated to ${languageLabel(targetLang)}.${detectNote}${logNote}`);
+
+      // Move the viewer into the player once dual subs are ready. The video
+      // stays paused — press Play whenever you're ready.
+      setViewStep('player');
+      setIsPlaying(false);
     } catch (error) {
-      setStatusMessage(`Transcription failed: ${error.message}`);
+      if (!processingCancelRef.current) {
+        const nativeStage = error.job?.stage || error.stage || 'native-pipeline';
+        const traceStage = nativeStage === 'preflight'
+          ? 'preflight'
+          : nativeStage === 'parsing-cues' || nativeStage === 'parse-cues'
+            ? 'cues'
+            : 'native';
+        updateTranscriptionTrace(traceStage, 'failed', error.message);
+        setTranscriptionDebug({ error: error.message, job: error.job || null, status: error.statusInfo || null });
+        setStatusMessage(`Processing failed: ${error.message}`);
+      }
     } finally {
       setTranscribing(false);
+      // Let the completed bar render briefly before it disappears.
+      window.setTimeout(() => setProcessing(false), 450);
+    }
+  };
+
+  const startProject = () => {
+    if (mediaFileRef.current && subtitleOrigin === 'unprocessed') {
+      processVideo();
+      return;
+    }
+    openPlayer();
+  };
+
+  const cancelProcessing = () => {
+    processingCancelRef.current = true;
+    setProcessing(false);
+    setTranscribing(false);
+    setTranslationDone(true);
+    setStatusMessage('Transcription cancelled. You can adjust settings and try again.');
+  };
+
+  // Background transcription for a library item (no full-screen overlay), so
+  // a whole folder of videos can be processed while you keep watching.
+  const transcribeLibraryItem = async (item) => {
+    if (!item?.file || item.status === 'processing' || item.cues?.length) return false;
+    updateLibraryItem(item.id, { status: 'processing', progress: 2, stage: 'Preparing', error: null });
+    try {
+      const { cues: asrCues, detectedLanguage } = await transcribeVideo(item.file, {
+        engine: 'node-whisper',
+        language: sourceLang,
+        quality,
+        mediaPath: item.path,
+        onProgress: (fraction, stage) => {
+          updateLibraryItem(item.id, {
+            progress: Math.min(60, Math.round(10 + fraction * 50)),
+            stage: stage || 'Transcribing',
+          });
+        },
+      });
+      if (!asrCues.length) throw new Error('No speech was detected in this file.');
+
+      const effectiveSource = (sourceLang === 'detect' || sourceLang === 'none')
+        ? (detectedLanguage || 'auto')
+        : sourceLang;
+      updateLibraryItem(item.id, { progress: 70, stage: `Translating to ${languageLabel(targetLang)}` });
+      const translated = await translateList(asrCues.map(enrichCue), effectiveSource, targetLang);
+      const finalCues = normalizeCuesForPlayback(translated);
+
+      updateLibraryItem(item.id, {
+        status: 'done',
+        progress: 100,
+        stage: 'Ready',
+        cues: finalCues,
+        detectedLang: detectedLanguage || null,
+      });
+      // If this video is on screen right now, show its fresh subtitles.
+      if (activeItemIdRef.current === item.id) {
+        setCues(finalCues);
+        setTranslationDone(true);
+        setSubtitleOrigin('transcription');
+        setDetectedLang(detectedLanguage || null);
+        recordSubtitleLog(finalCues, 'transcribe', item.name);
+      }
+      return true;
+    } catch (error) {
+      updateLibraryItem(item.id, { status: 'failed', stage: 'Failed', error: error.message });
+      return false;
+    }
+  };
+
+  const processAllPending = async () => {
+    if (batchRunning) return;
+    const pending = libraryRef.current.filter((item) => !item.cues?.length && item.status !== 'processing');
+    if (!pending.length) {
+      setStatusMessage('Every video in the library already has subtitles.');
+      return;
+    }
+    setBatchRunning(true);
+    setStatusMessage(`Creating subtitles for ${pending.length} video${pending.length > 1 ? 's' : ''}, one at a time…`);
+    try {
+      for (const item of pending) {
+        // Sequential on purpose: one whisper.cpp job at a time.
+        await transcribeLibraryItem(item);
+      }
+      setStatusMessage('Library processing finished.');
+    } finally {
+      setBatchRunning(false);
     }
   };
 
@@ -945,17 +1532,76 @@ export default function Home() {
       return;
     }
     if (nextMode === 'transcribe') {
-      runTranscription();
+      processVideo();
       return;
     }
-    // 'embedded' path (extract an existing subtitle stream) still uses the
-    // placeholder cues until the FFmpeg extraction backend lands.
-    applyCues(DEMO_CUES, nextMode, `${sourceModes.find((item) => item.id === nextMode)?.label} source path selected.`);
+    setSourceMode(nextMode);
+    setSubtitleOrigin('unprocessed');
+    setCues([]);
+    setPlaybackTime(0);
+    setSelectedWord(null);
+    setTranslationDone(false);
+    setStatusMessage('Embedded subtitle extraction is not available yet. Choose Transcribe for this MP4 or import a sidecar file.');
   };
 
+  const mediaDuration = duration || cues[cues.length - 1]?.end || 0;
+  const positionKey = mediaName ? `${mediaName}:${mediaFileRef.current?.size || 0}` : null;
+
   const syncVideoTime = (time) => {
-    if (videoRef.current) videoRef.current.currentTime = time;
-    setPlaybackTime(time);
+    const clamped = clamp(time, 0, mediaDuration || time);
+    if (videoRef.current) videoRef.current.currentTime = clamped;
+    setPlaybackTime(clamped);
+  };
+
+  const seekBy = (delta) => {
+    const current = videoRef.current?.currentTime ?? playbackTime;
+    syncVideoTime(current + delta);
+    revealPlayerChrome();
+  };
+
+  const seekFromClientX = (clientX) => {
+    const rect = timelineRef.current?.getBoundingClientRect();
+    if (!rect || !rect.width || !mediaDuration) return;
+    const fraction = clamp((clientX - rect.left) / rect.width, 0, 1);
+    syncVideoTime(fraction * mediaDuration);
+  };
+
+  // VLC-style scrubbing: click anywhere on the bar to jump, drag to scrub.
+  const handleSeekPointerDown = (event) => {
+    event.preventDefault();
+    seekFromClientX(event.clientX);
+    const handleMove = (moveEvent) => seekFromClientX(moveEvent.clientX);
+    const handleUp = () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  };
+
+  const toggleMute = () => {
+    setMuted((value) => {
+      const next = !value;
+      if (videoRef.current) videoRef.current.muted = next;
+      return next;
+    });
+  };
+
+  const toggleFullscreen = () => {
+    if (typeof document === 'undefined') return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
+    } else {
+      videoFrameRef.current?.requestFullscreen?.().catch(() => {});
+    }
+  };
+
+  const cyclePlaybackRate = () => {
+    const index = PLAYBACK_RATES.indexOf(playbackRate);
+    const next = PLAYBACK_RATES[(index + 1) % PLAYBACK_RATES.length];
+    setPlaybackRate(next);
+    if (videoRef.current) videoRef.current.playbackRate = next;
+    setStatusMessage(`Playback speed: ${next}×`);
   };
 
   const revealPlayerChrome = () => {
@@ -973,10 +1619,20 @@ export default function Home() {
 
   const togglePlayback = async () => {
     setControlsVisible(true);
+    if (!playbackReady) {
+      videoRef.current?.pause();
+      setIsPlaying(false);
+      setStatusMessage('Playback stays paused until transcription and translation are complete.');
+      return;
+    }
     if (videoRef.current && mediaUrl) {
       if (videoRef.current.paused) {
-        await videoRef.current.play();
-        setIsPlaying(true);
+        try {
+          await videoRef.current.play();
+        } catch (error) {
+          setIsPlaying(false);
+          setStatusMessage(`Playback could not start: ${error.message}`);
+        }
       } else {
         videoRef.current.pause();
         setIsPlaying(false);
@@ -1029,6 +1685,48 @@ export default function Home() {
     setStatusMessage('Shadowing scorer armed. Recording/alignment lands in the media worker phase.');
   };
 
+  // Translate an explicit list of cues and return the translated array. Shared
+  // by the "Batch translate" button and the transcribe->translate pipeline so
+  // both use identical batching/fallback behaviour.
+  const translateList = async (list, effectiveSource, target) => {
+    const translateOne = async (cue) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch('/api/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({ text: cue.original, from: effectiveSource, to: target, llmModel: 'none' }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          return { ...cue, translation: data.text || cue.translation };
+        }
+        return { ...cue, translation: localTranslate(cue.original, target) };
+      } catch {
+        return { ...cue, translation: localTranslate(cue.original, target) };
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+
+    // Bounded worker pool: honours the Concurrency setting instead of firing
+    // every cue at once (which rate-limited the translator on long videos).
+    const maxWorkers = Math.max(1, Math.min(12, Number(concurrency) || 4));
+    const results = new Array(list.length);
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < list.length) {
+        const index = nextIndex++;
+        results[index] = await translateOne(list[index]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(maxWorkers, list.length) }, worker));
+    return results;
+  };
+
   const translateCues = async () => {
     // Never send the 'detect'/'none' sentinels to the translator. Use the
     // recognised language when we have it, otherwise let the translator
@@ -1037,34 +1735,18 @@ export default function Home() {
       ? (detectedLang || 'auto')
       : sourceLang;
 
+    if (!cues.length || transcribing || processing) return;
+    videoRef.current?.pause();
+    setIsPlaying(false);
     setStatusMessage(`Batch translating ${cues.length} cues in groups of ${batchSize} with concurrency ${concurrency}.`);
     setTranslationDone(false);
 
-    const translated = await Promise.all(cues.map(async (cue) => {
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 1200);
-      try {
-        const response = await fetch('/api/translate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({ text: cue.original, from: effectiveSource, to: targetLang, llmModel: 'none' }),
-        });
+    const translated = await translateList(cues, effectiveSource, targetLang);
+    const finalCues = normalizeCuesForPlayback(translated);
 
-        if (response.ok) {
-          const data = await response.json();
-          return { ...cue, translation: data.text || cue.translation };
-        }
-        return { ...cue, translation: localTranslate(cue.original, targetLang) };
-      } catch {
-        return { ...cue, translation: localTranslate(cue.original, targetLang) };
-      } finally {
-        window.clearTimeout(timeout);
-      }
-    }));
-
-    setCues(translated);
+    setCues(finalCues);
     setTranslationDone(true);
+    recordSubtitleLog(finalCues, sourceMode);
     setStatusMessage(cacheEnabled ? 'Translations ready. Repeated lines will hit cache on re-run.' : 'Translations ready. Cache is disabled.');
   };
 
@@ -1101,7 +1783,10 @@ export default function Home() {
 
     const baseName = mediaName.replace(/\.[^.]+$/, '') || 'dual-live-translations';
     if (formats.srt) downloadText(`${baseName}.dual.srt`, makeSrt(cues));
-    if (formats.ass) downloadText(`${baseName}.dual.ass`, makeAss(cues));
+    if (formats.ass) downloadText(`${baseName}.dual.ass`, makeAss(cues, {
+      original: subtitleOriginalColor,
+      translation: subtitleTranslationColor,
+    }));
     if (formats.json) {
       downloadText(`${baseName}.project.json`, JSON.stringify({
         mediaName,
@@ -1109,6 +1794,7 @@ export default function Home() {
         targets: [targetLang],
         quality,
         cleanup,
+        subtitleColors: { original: subtitleOriginalColor, translation: subtitleTranslationColor },
         subtitleMask: maskSettings,
         cues,
         queue,
@@ -1122,20 +1808,55 @@ export default function Home() {
     <main className={`app-shell ${mode} step-${viewStep} ${intent}-intent${focusView ? ' focus-view' : ''}${settingsOpen ? ' settings-open' : ''}${viewStep === 'player' && isPlaying && !controlsVisible ? ' controls-hidden' : ' controls-active'}`}>
       <header className="topbar">
         <div className="brand">
+          <IconButton label="Open your video library" icon={Menu} onClick={() => setLibraryOpen(true)} />
           <div className="brand-mark"><Languages size={21} /></div>
           <div>
             <h1>{APP_NAME}</h1>
             <p>{mediaName}</p>
           </div>
         </div>
-
+        <div className="topbar-tools">
+          <IconButton label="Settings" icon={Settings} onClick={() => openSettings('subtitles')} />
+        </div>
       </header>
-      <input ref={mediaInputRef} className="sr-only" type="file" accept="video/*,audio/*,.mkv,.mov,.webm,.mp4,.mp3,.wav" onChange={handleMediaImport} />
+      <input ref={mediaInputRef} className="sr-only" type="file" multiple accept="video/*,audio/*,.mkv,.mov,.webm,.mp4,.mp3,.wav" onChange={handleMediaImport} />
       <input ref={sidecarInputRef} className="sr-only" type="file" accept=".srt,.vtt,.ass,.ssa,text/plain" onChange={handleSidecarImport} />
       <input ref={batchInputRef} className="sr-only" type="file" accept=".json,.csv,.txt,video/*,audio/*" multiple onChange={handleBatchImport} />
 
+      {processing ? (
+        <div className="processing-overlay" role="status" aria-live="polite">
+          <div className="processing-card">
+            <div className="processing-spinner" aria-hidden="true"><AudioWaveform size={30} /></div>
+            <h2>Processing your video</h2>
+            <p className="processing-file">{mediaName}</p>
+            <div className="processing-bar">
+              <div className="processing-bar-fill" style={{ width: `${Math.round(processingProgress * 100)}%` }} />
+            </div>
+            <p className="processing-stage">
+              {processingStage || 'Working'}
+              {activeEngine ? ' · local Whisper' : ''}
+              {` · ${Math.round(processingProgress * 100)}%`}
+            </p>
+            <ol className="processing-steps">
+              <li className={processingProgress > 0.1 ? 'done' : 'active'}>Extract audio</li>
+              <li className={processingProgress >= 0.6 ? 'done' : processingProgress > 0.1 ? 'active' : ''}>
+                Transcribe {sourceLang === 'detect' ? '(auto-detect)' : `(${sourceLangLabel(sourceLang)})`}
+              </li>
+              <li className={processingProgress >= 1 ? 'done' : processingProgress >= 0.6 ? 'active' : ''}>
+                Translate to {languageLabel(targetLang)}
+              </li>
+            </ol>
+            <button type="button" className="secondary-action processing-cancel" onClick={cancelProcessing}>Cancel</button>
+          </div>
+        </div>
+      ) : null}
+
       {viewStep === 'landing' ? (
         <section className="landing-flow" aria-label="Start">
+          <div className="landing-intro">
+            <h2>Watch anything with dual subtitles</h2>
+            <p>Add a video, tell LingoLoop what language is spoken and what to translate it into, and it creates two subtitle lines: the original speech and your translation.</p>
+          </div>
           <button
             className="drop-panel"
             type="button"
@@ -1144,23 +1865,18 @@ export default function Home() {
             onDrop={handleDropMedia}
           >
             <Upload size={36} />
-            <strong>Drop a video</strong>
-            <span>or click to browse. LingoLoop will parse subtitles or prepare local whisper.cpp transcription.</span>
+            <strong>Drop your videos here</strong>
+            <span>…or click to browse. You can add several files at once — they all go into your library, ready to transcribe.</span>
           </button>
-          <button className="sample-action" type="button" onClick={loadSampleProject}>
-            <Sparkles size={17} />
-            <span>Try the sample smoke test</span>
-          </button>
-          <div className="start-mode-row">
-            <button type="button" className={mode === 'education' ? 'selected' : ''} onClick={() => chooseExperience('education')}>
-              <BookOpen size={18} />
-              <span><strong>Study</strong><small>Loop, shadow, mine, review</small></span>
-            </button>
-            <button type="button" className={mode === 'leisure' ? 'selected' : ''} onClick={() => chooseExperience('leisure')}>
-              <Film size={18} />
-              <span><strong>Watch</strong><small>Clean dual subtitles, fewer panels</small></span>
-            </button>
+          <div className="landing-langs">
+            <SelectControl label="Spoken language" value={sourceLang} onChange={setSourceLang} options={sourceLanguages} />
+            <SelectControl label="Translate to" value={targetLang} onChange={setTargetLang} />
           </div>
+          <p className="landing-hint">Not sure what&apos;s spoken? Leave it on Auto-detect. Everything runs locally on your computer — nothing is uploaded.</p>
+          <button className="sample-action" type="button" onClick={loadSampleProject} title="Loads a short built-in clip so you can see how the app works">
+            <Sparkles size={17} />
+            <span>Try it first with a built-in sample clip</span>
+          </button>
         </section>
       ) : null}
 
@@ -1170,16 +1886,13 @@ export default function Home() {
             <div className="config-media-line">
               <Film size={18} />
               <span>{mediaName}</span>
-              <small>{mode === 'education' ? 'Study defaults' : 'Watch defaults'}</small>
+              <small>{subtitleOrigin === 'unprocessed' ? 'No subtitles yet' : 'Subtitles ready'}</small>
             </div>
             <div className="config-language-grid">
-              <SelectControl label="From" value={sourceLang} onChange={setSourceLang} options={sourceLanguages} />
-              <SelectControl label="To" value={targetLang} onChange={setTargetLang} />
+              <SelectControl label="Spoken language" value={sourceLang} onChange={setSourceLang} options={sourceLanguages} />
+              <SelectControl label="Translate to" value={targetLang} onChange={setTargetLang} />
             </div>
-            <div className="intent-toggle" aria-label="Output intent">
-              <button type="button" className={intent === 'watch' ? 'selected' : ''} onClick={() => setIntent('watch')}>Watch</button>
-              <button type="button" className={intent === 'export' ? 'selected' : ''} onClick={() => setIntent('export')}>Export</button>
-            </div>
+            <p className="config-hint">Press the button below and LingoLoop will listen to the video, write down what is said, and translate it. You watch with both lines as subtitles.</p>
             {advancedOpen ? (
               <div className="advanced-summary">
                 <div>
@@ -1195,9 +1908,38 @@ export default function Home() {
               </div>
             ) : null}
             <div className="config-actions">
-              <button type="button" className="secondary-action" onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? 'Hide advanced' : 'Advanced'}</button>
-              <button type="button" className="primary-action" onClick={startProject}><Play size={18} /><span>Start</span></button>
+              <button type="button" className="secondary-action" title="Engine, quality, and subtitle source options" onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? 'Hide advanced' : 'Advanced'}</button>
+              <button type="button" className="primary-action" onClick={startProject} disabled={processing}>
+                {subtitleOrigin === 'unprocessed' && mediaFileRef.current ? <AudioWaveform size={18} /> : <Play size={18} />}
+                <span>{subtitleOrigin === 'unprocessed' && mediaFileRef.current ? 'Create subtitles & watch' : 'Watch now'}</span>
+              </button>
             </div>
+            {pendingCount > 1 ? (
+              <button type="button" className="secondary-action full" onClick={processAllPending} disabled={batchRunning}>
+                <ListChecks size={16} />
+                <span>{batchRunning ? 'Processing your library…' : `Create subtitles for all ${pendingCount} waiting videos`}</span>
+              </button>
+            ) : null}
+            <p className="config-status-line">{statusMessage}</p>
+            {transcriptionTrace.length ? (
+              <section className="transcription-trace" aria-label="Transcription debug trace">
+                <div className="transcription-trace-heading">
+                  <strong>MP4 to subtitles</strong>
+                  <small>{transcriptionDebug?.job?.id || 'Awaiting run'}</small>
+                </div>
+                <ol>
+                  {transcriptionTrace.map((stage) => (
+                    <li key={stage.id} className={stage.status}>
+                      <StatusDot status={stage.status} />
+                      <span><strong>{stage.label}</strong><small>{stage.detail}</small></span>
+                    </li>
+                  ))}
+                </ol>
+                {transcriptionDebug?.job?.logPath ? <p>Native job log: <code>{transcriptionDebug.job.logPath}</code></p> : null}
+                {transcriptionDebug?.error ? <p className="trace-error">Last error: {transcriptionDebug.error}</p> : null}
+                {transcriptionDebug?.error && transcriptionDebug.status?.ready === false ? <p className="trace-note">Browser-side transcription is disabled for imported media because it cannot reliably decode production video audio.</p> : null}
+              </section>
+            ) : null}
           </div>
         </section>
       ) : null}
@@ -1240,27 +1982,26 @@ export default function Home() {
           <div className="player-shell" onPointerMove={revealPlayerChrome} onFocusCapture={revealPlayerChrome}>
             <div className="player-topline">
               <div>
-                <strong>Subtitle viewer</strong>
-                <span>{statusMessage}</span>
+                <strong>{mediaName}</strong>
+                <span>{sourceLangLabel(detectedLang || sourceLang)} → {languageLabel(targetLang)}</span>
               </div>
               <div className="player-tools">
-                <IconButton label="Batch translate" icon={Sparkles} active={!translationDone} onClick={translateCues} />
-                <IconButton label="Focus viewer" icon={Maximize2} active={focusView} onClick={() => setFocusView((value) => !value)} />
-                <IconButton label="Subtitle settings" icon={SlidersHorizontal} active onClick={() => openSettings('subtitles')} />
-                <IconButton label="Queue settings" icon={Settings} onClick={() => openSettings('batch')} />
-              </div>
-            </div>
-
-            <div className="subtitle-toolbar" aria-label="Subtitle display controls">
-              <div className="subtitle-control-group">
-                {subtitleStyles.map((style) => (
-                  <button key={style.id} type="button" className={subtitleStyle === style.id ? 'selected' : ''} onClick={() => setSubtitleStyle(style.id)}>{style.label}</button>
-                ))}
-              </div>
-              <div className="subtitle-control-group">
-                {subtitlePositions.map((position) => (
-                  <button key={position.id} type="button" className={subtitlePosition === position.id ? 'selected' : ''} onClick={() => setSubtitlePosition(position.id)}>{position.label}</button>
-                ))}
+                <IconButton label="Your video library" icon={Menu} onClick={() => setLibraryOpen(true)} />
+                <IconButton
+                  label="Re-translate the subtitles"
+                  icon={Languages}
+                  active={!translationDone}
+                  disabled={!cues.length || !translationDone || transcribing || processing}
+                  onClick={translateCues}
+                />
+                <IconButton
+                  label={subtitleLog ? `Download session subtitle log (${subtitleLog.cueCount} cues)` : 'No session subtitle log yet'}
+                  icon={Download}
+                  disabled={!subtitleLog}
+                  onClick={downloadSubtitleLog}
+                />
+                <IconButton label="Subtitle style & position" icon={SlidersHorizontal} onClick={() => openSettings('subtitles')} />
+                <IconButton label="Settings" icon={Settings} onClick={() => openSettings('languages')} />
               </div>
             </div>
 
@@ -1270,9 +2011,50 @@ export default function Home() {
                   ref={videoRef}
                   className="media-preview"
                   src={mediaUrl}
-                  onTimeUpdate={(event) => setPlaybackTime(event.currentTarget.currentTime)}
-                  onPlay={() => setIsPlaying(true)}
-                  onPause={() => setIsPlaying(false)}
+                  onLoadedMetadata={(event) => {
+                    const video = event.currentTarget;
+                    setDuration(video.duration || 0);
+                    video.playbackRate = playbackRate;
+                    // Continue watching: jump back to where this video was left.
+                    const saved = loadPositions()[positionKey];
+                    if (saved?.t > 5 && (!video.duration || saved.t < video.duration - 5)) {
+                      video.currentTime = saved.t;
+                      setPlaybackTime(saved.t);
+                      setStatusMessage(`Resumed from ${clockShort(saved.t)}. Press Play to continue.`);
+                    }
+                  }}
+                  onTimeUpdate={(event) => {
+                    const video = event.currentTarget;
+                    setPlaybackTime(video.currentTime);
+                    // Remember the position every few seconds while playing.
+                    if (Math.abs(video.currentTime - positionSaveRef.current) > 3) {
+                      positionSaveRef.current = video.currentTime;
+                      savePlaybackPosition(positionKey, video.currentTime, video.duration);
+                    }
+                  }}
+                  onPlay={(event) => {
+                    if (!playbackReady) {
+                      event.currentTarget.pause();
+                      setIsPlaying(false);
+                      setStatusMessage('Playback stays paused until transcription and translation are complete.');
+                      return;
+                    }
+                    setPlaybackTime(event.currentTarget.currentTime);
+                    setIsPlaying(true);
+                  }}
+                  onSeeking={(event) => setPlaybackTime(event.currentTarget.currentTime)}
+                  onSeeked={(event) => setPlaybackTime(event.currentTarget.currentTime)}
+                  onPause={(event) => {
+                    setIsPlaying(false);
+                    savePlaybackPosition(positionKey, event.currentTarget.currentTime, event.currentTarget.duration);
+                  }}
+                  onEnded={(event) => {
+                    setIsPlaying(false);
+                    savePlaybackPosition(positionKey, event.currentTarget.duration, event.currentTarget.duration);
+                  }}
+                  onClick={togglePlayback}
+                  onDoubleClick={toggleFullscreen}
+                  muted={muted}
                   controls={false}
                 />
               ) : (
@@ -1300,26 +2082,14 @@ export default function Home() {
               {maskMode === 'hide' ? (
                 <div className="soft-sub-notice">Original soft subtitle track hidden for preview/export</div>
               ) : null}
-              <div className="video-status">
-                <Sparkles size={15} />
-                <span>{mode === 'education' ? `${dueCards} review cards due` : 'Clean viewing mode'}</span>
-              </div>
-              {mode === 'education' && activeCue ? (
-                <div className="loop-dock" aria-label="Study loop tools">
-                  <div>
-                    <strong>Loop {secondsToClock(activeCue.start)}</strong>
-                    <span>{activeCue.original}</span>
-                  </div>
-                  <div className="loop-actions">
-                    <button type="button" onClick={loopCurrentCue}>Loop</button>
-                    <button type="button" onClick={shadowCurrentCue}>Shadow</button>
-                    <button type="button" onClick={mineCurrentCue}>Mine</button>
-                  </div>
-                </div>
-              ) : null}
               {activeCue ? (
-                <div className={`subtitle-stack ${subtitleStyle} ${subtitlePosition}`}>
-                  <p className="reading-line"><span>{activeCue.reading}</span></p>
+                <div
+                  className={`subtitle-stack ${subtitleStyle} ${subtitlePosition}`}
+                  style={{
+                    '--subtitle-original-color': subtitleOriginalColor,
+                    '--subtitle-translation-color': subtitleTranslationColor,
+                  }}
+                >
                   <h2><span>{activeCue.original}</span></h2>
                   <h3><span>{activeCue.translation}</span></h3>
                 </div>
@@ -1327,15 +2097,48 @@ export default function Home() {
             </div>
 
             <div className="transport">
-              <button type="button" className="play-button" aria-label={isPlaying ? 'Pause' : 'Play'} onClick={togglePlayback}>
+              <button
+                type="button"
+                className="play-button"
+                aria-label={playbackReady ? (isPlaying ? 'Pause (Space)' : 'Play (Space)') : 'Waiting for completed subtitles'}
+                title={playbackReady ? (isPlaying ? 'Pause (Space)' : 'Play (Space)') : 'Playback unlocks after transcription and translation finish'}
+                disabled={!playbackReady}
+                onClick={togglePlayback}
+              >
                 {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
               </button>
-              <div className="timeline" aria-label="Playback progress">
-                <div style={{ width: `${Math.min(100, (playbackTime / (cues[cues.length - 1]?.end || 20)) * 100)}%` }} />
+              <IconButton label="Back 10 seconds (←)" icon={Rewind} onClick={() => seekBy(-10)} />
+              <IconButton label="Forward 10 seconds (→)" icon={FastForward} onClick={() => seekBy(10)} />
+              <div
+                ref={timelineRef}
+                className="timeline seekable"
+                role="slider"
+                tabIndex={0}
+                aria-label="Seek through the video"
+                aria-valuemin={0}
+                aria-valuemax={Math.round(mediaDuration) || 0}
+                aria-valuenow={Math.round(playbackTime) || 0}
+                aria-valuetext={`${clockShort(playbackTime)} of ${clockShort(mediaDuration)}`}
+                onPointerDown={handleSeekPointerDown}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowRight') { event.preventDefault(); seekBy(5); }
+                  if (event.key === 'ArrowLeft') { event.preventDefault(); seekBy(-5); }
+                }}
+              >
+                <div style={{ width: `${mediaDuration ? Math.min(100, (playbackTime / mediaDuration) * 100) : 0}%` }} />
+                <span className="seek-handle" style={{ left: `${mediaDuration ? Math.min(100, (playbackTime / mediaDuration) * 100) : 0}%` }} aria-hidden="true" />
               </div>
-              <span className="timecode">{secondsToClock(playbackTime)}</span>
-              <IconButton label="Loop current line" icon={Repeat} active onClick={loopCurrentCue} />
-              <IconButton label="Volume" icon={Volume2} />
+              <span className="timecode">{clockShort(playbackTime)} / {clockShort(mediaDuration)}</span>
+              <button type="button" className="icon-button rate-button" title="Playback speed" onClick={cyclePlaybackRate}>{playbackRate}×</button>
+              <IconButton label="Replay this line" icon={Repeat} onClick={loopCurrentCue} />
+              {mode === 'education' ? (
+                <>
+                  <IconButton label="Practice speaking this line (shadow)" icon={AudioWaveform} onClick={shadowCurrentCue} />
+                  <IconButton label={`Save this line as a flashcard${dueCards ? ` (${dueCards} due)` : ''}`} icon={BookOpen} onClick={mineCurrentCue} />
+                </>
+              ) : null}
+              <IconButton label={muted ? 'Unmute (M)' : 'Mute (M)'} icon={muted ? VolumeX : Volume2} active={muted} onClick={toggleMute} />
+              <IconButton label="Fullscreen (F)" icon={Maximize2} onClick={toggleFullscreen} />
             </div>
           </div>
 
@@ -1419,11 +2222,12 @@ export default function Home() {
         </section>
 
         <aside className="right-panel" aria-label="Queue and transcript">
-          <div className="panel-tabs">
-            <button className="selected" type="button"><ListChecks size={16} /> Queue</button>
-            <button type="button"><BookOpen size={16} /> Vocabulary</button>
+          <div className="panel-tabs" role="tablist" aria-label="Side panel">
+            <button role="tab" aria-selected={panelTab === 'queue'} className={panelTab === 'queue' ? 'selected' : ''} type="button" onClick={() => setPanelTab('queue')}><ListChecks size={16} /> Queue</button>
+            <button role="tab" aria-selected={panelTab === 'vocab'} className={panelTab === 'vocab' ? 'selected' : ''} type="button" onClick={() => setPanelTab('vocab')}><BookOpen size={16} /> Vocabulary</button>
           </div>
 
+          {panelTab === 'queue' ? (
           <section className="queue-panel">
             <div className="section-title"><span>Offline batch queue</span><small>{manifestSummary}</small></div>
             <div className="queue-summary">
@@ -1451,6 +2255,26 @@ export default function Home() {
               ))}
             </div>
           </section>
+          ) : null}
+
+          <div className="subtitle-log-toolbar">
+            <div>
+              <strong>Session subtitle log</strong>
+              <span>
+                {subtitleLog
+                  ? `${subtitleLog.cueCount} cues · ${clockShort(subtitleLog.duration)} · ${new Date(subtitleLog.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                  : 'No completed subtitle file yet'}
+              </span>
+            </div>
+            <div className="subtitle-log-actions">
+              <button type="button" className="icon-button" aria-label="Download temporary SRT log" title="Download temporary SRT log" disabled={!subtitleLog} onClick={downloadSubtitleLog}>
+                <Download size={16} />
+              </button>
+              <button type="button" className="icon-button" aria-label="Clear temporary subtitle log" title="Clear temporary subtitle log" disabled={!subtitleLog} onClick={clearSubtitleLog}>
+                <X size={16} />
+              </button>
+            </div>
+          </div>
 
           <div className="transcript-list">
             {cues.map((cue) => (
@@ -1462,8 +2286,12 @@ export default function Home() {
             ))}
           </div>
 
+          {panelTab === 'vocab' ? (
           <div className="word-panel">
-            <div className="section-title"><span>Vocabulary</span><X size={15} /></div>
+            <div className="section-title">
+              <span>Vocabulary</span>
+              <button type="button" className="icon-button" aria-label="Clear selected word" onClick={() => setSelectedWord(null)}><X size={15} /></button>
+            </div>
             <div className="word-cloud">
               {vocabulary.map((word, index) => (
                 <WordChip key={`${word.text}-${index}`} word={word} selected={currentWord?.text === word.text} onClick={() => setSelectedWord(word)} />
@@ -1476,8 +2304,72 @@ export default function Home() {
               <p>Vocabulary is derived from cues and updates when sidecar or batch data changes.</p>
             </div>
           </div>
+          ) : null}
         </aside>
       </section>
+      ) : null}
+
+      {libraryOpen ? (
+        <div className="library-backdrop" role="presentation" onMouseDown={() => setLibraryOpen(false)}>
+          <aside className="library-drawer" aria-label="Video library" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="library-head">
+              <div>
+                <strong>Your library</strong>
+                <span>Every video you&apos;ve added. Click one to watch or transcribe it.</span>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close library" onClick={() => setLibraryOpen(false)}><X size={18} /></button>
+            </div>
+            <div className="library-actions">
+              <button type="button" className="secondary-action" title="Add more videos — you can select several at once" onClick={() => mediaInputRef.current?.click()}>
+                <Plus size={16} /><span>Add videos</span>
+              </button>
+              <button
+                type="button"
+                className="secondary-action"
+                title="Transcribe and translate every video that doesn't have subtitles yet, one at a time"
+                onClick={processAllPending}
+                disabled={batchRunning || !pendingCount}
+              >
+                <AudioWaveform size={16} />
+                <span>{batchRunning ? 'Processing…' : `Subtitle all${pendingCount ? ` (${pendingCount})` : ''}`}</span>
+              </button>
+            </div>
+            <div className="library-list">
+              {library.length ? library.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`library-item ${item.status}${item.id === activeItemId ? ' active' : ''}`}
+                  onClick={() => { selectLibraryItem(item); setLibraryOpen(false); }}
+                >
+                  <Film size={16} />
+                  <span className="library-item-name">{item.name}</span>
+                  <small>
+                    {item.status === 'processing' ? `${item.progress}% · ${item.stage}`
+                      : item.status === 'done' ? 'Subtitles ready — click to watch'
+                        : item.status === 'failed' ? `Failed: ${item.error}`
+                          : 'Waiting — no subtitles yet'}
+                  </small>
+                  {item.status === 'processing' ? (
+                    <span className="mini-progress"><span style={{ width: `${item.progress}%` }} /></span>
+                  ) : null}
+                </button>
+              )) : (
+                <p className="library-empty">Nothing here yet. Use &quot;Add videos&quot; above, or drop files anywhere on the start screen.</p>
+              )}
+            </div>
+            <div className="library-foot">
+              <button
+                type="button"
+                className="secondary-action"
+                title="Already have a matching .srt/.vtt/.ass subtitle file? Load it for the current video instead of transcribing."
+                onClick={() => sidecarInputRef.current?.click()}
+              >
+                <FileText size={15} /><span>Import a subtitle file instead</span>
+              </button>
+            </div>
+          </aside>
+        </div>
       ) : null}
 
       {settingsOpen ? (
@@ -1540,6 +2432,74 @@ export default function Home() {
                       <button key={position.id} type="button" className={subtitlePosition === position.id ? 'selected' : ''} onClick={() => setSubtitlePosition(position.id)}>{position.label}</button>
                     ))}
                   </div>
+                  <div className="subtitle-color-grid">
+                    <div className="subtitle-color-field">
+                      <div className="subtitle-color-heading">
+                        <span>Spoken text</span>
+                        <input
+                          type="color"
+                          aria-label="Spoken subtitle fill color"
+                          value={subtitleOriginalColor}
+                          onChange={(event) => setSubtitleOriginalColor(event.target.value)}
+                        />
+                      </div>
+                      <div className="subtitle-swatch-row" aria-label="Spoken subtitle color presets">
+                        {SUBTITLE_COLOR_PRESETS.map((color) => (
+                          <button
+                            key={`original-${color}`}
+                            type="button"
+                            className={subtitleOriginalColor === color ? 'selected' : ''}
+                            style={{ '--swatch-color': color }}
+                            aria-label={`Use ${color} for spoken subtitles`}
+                            title={color}
+                            onClick={() => setSubtitleOriginalColor(color)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="subtitle-color-field">
+                      <div className="subtitle-color-heading">
+                        <span>Translation</span>
+                        <input
+                          type="color"
+                          aria-label="Translation subtitle fill color"
+                          value={subtitleTranslationColor}
+                          onChange={(event) => setSubtitleTranslationColor(event.target.value)}
+                        />
+                      </div>
+                      <div className="subtitle-swatch-row" aria-label="Translation subtitle color presets">
+                        {SUBTITLE_COLOR_PRESETS.map((color) => (
+                          <button
+                            key={`translation-${color}`}
+                            type="button"
+                            className={subtitleTranslationColor === color ? 'selected' : ''}
+                            style={{ '--swatch-color': color }}
+                            aria-label={`Use ${color} for translated subtitles`}
+                            title={color}
+                            onClick={() => setSubtitleTranslationColor(color)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="subtitle-log-toolbar settings-subtitle-log">
+                    <div>
+                      <strong>Session subtitle log</strong>
+                      <span>
+                        {subtitleLog
+                          ? `${subtitleLog.name} · ${subtitleLog.cueCount} cues · ${clockShort(subtitleLog.duration)}`
+                          : 'Created after a cue set is ready'}
+                      </span>
+                    </div>
+                    <div className="subtitle-log-actions">
+                      <button type="button" className="icon-button" aria-label="Download temporary SRT log" title="Download temporary SRT log" disabled={!subtitleLog} onClick={downloadSubtitleLog}>
+                        <Download size={16} />
+                      </button>
+                      <button type="button" className="icon-button" aria-label="Clear temporary subtitle log" title="Clear temporary subtitle log" disabled={!subtitleLog} onClick={clearSubtitleLog}>
+                        <X size={16} />
+                      </button>
+                    </div>
+                  </div>
                   <div className="mask-mode-grid">
                     {subtitleMaskModes.map((item) => (
                       <button key={item.id} type="button" className={maskMode === item.id ? 'selected' : ''} onClick={() => chooseMaskMode(item.id)}>
@@ -1560,17 +2520,31 @@ export default function Home() {
                 <section className="settings-section">
                   <div className={`pipeline-health ${whisperReady ? 'ready' : 'needs-repair'}`}>
                     <div>
-                      <strong>Local whisper.cpp pipeline</strong>
-                      <span>{whisperReady ? 'FFmpeg, ffprobe, whisper-cli, and base model are available.' : 'Install or repair FFmpeg, whisper-cli, and ggml-base.bin before desktop transcription.'}</span>
+                      <strong>Local transcription pipeline</strong>
+                      <span>{whisperReady
+                        ? (transcriptionStatus?.model?.downloadOnDemand
+                          ? `FFmpeg, ffprobe, and local Whisper are ready. The ${qualityPresets[quality].label} model downloads on first transcription.`
+                          : 'FFmpeg, ffprobe, local Whisper, and the selected model are ready.')
+                        : `Local transcription needs FFmpeg, ffprobe, the local recognizer, and the ${qualityPresets[quality].label} tier model.`}</span>
                     </div>
                     <div className="pipeline-checks">
-                      {['ffmpeg', 'ffprobe', 'whisper', 'model'].map((key) => (
+                      {['ffmpeg', 'ffprobe', 'recognizer', 'model'].map((key) => (
                         <span key={key} className={transcriptionStatus?.checks?.[key] ? 'ready' : 'missing'}>{key}</span>
                       ))}
                     </div>
                     <div className="pipeline-actions">
                       <button type="button" onClick={loadSampleProject}>Try sample</button>
-                      <button type="button" onClick={() => setStatusMessage('Run scripts/setup-whisper.sh, then reopen Audio & Recognition to re-check local transcription.')}>Repair transcription</button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const status = await refreshTranscriptionStatus(quality);
+                          setStatusMessage(status.ready
+                            ? 'Local transcription is ready for the selected quality tier.'
+                            : 'Reinstall the app dependencies, then use Re-check transcription.');
+                        }}
+                      >
+                        Re-check transcription
+                      </button>
                     </div>
                   </div>
                   <div className="preset-row">
